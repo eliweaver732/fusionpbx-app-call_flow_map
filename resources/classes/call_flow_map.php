@@ -256,7 +256,7 @@ class call_flow_map {
 		$sql  = "select * from v_ivr_menu_options ";
 		$sql .= "where ivr_menu_uuid = :uuid and domain_uuid = :domain_uuid ";
 		$sql .= "and ivr_menu_option_enabled = 'true' ";
-		$sql .= "order by ivr_menu_option_order asc";
+		$sql .= "order by ivr_menu_option_digits, ivr_menu_option_order asc";
 		$options = $this->database->select($sql, ['uuid' => $uuid, 'domain_uuid' => $this->domain_uuid], 'all');
 
 		if (is_array($options)) {
@@ -280,6 +280,31 @@ class call_flow_map {
 					$this->lookup_by_extension($m[1], $node_id, $digit_label, $depth + 1);
 					continue;
 				}
+
+				// menu-exec-app:lua streamfile.lua FILENAME → play recording
+				if ($action === 'menu-exec-app' && preg_match('/^lua\s+streamfile\.lua\s+(.+)$/i', $param, $m)) {
+				    $filename = trim($m[1]);
+				    $r_id = 'recording_' . ($this->node_counter++);
+				    $this->add_node($r_id, "🔊 " . $this->truncate($filename, 30), 'recording', '', [], $depth + 1);
+				    $this->add_edge($node_id, $r_id, $digit_label);
+				    continue;
+				}
+
+				// menu-exec-app:playback tone_stream://...  → look up friendly name in v_vars
+				if ($action === 'menu-exec-app' && preg_match('/^playback\s+tone_stream:\/\/(.+)$/i', $param, $m)) {
+				    $tone_value = trim($m[1]);
+				    $var_row = $this->database->select(
+				        "select var_name from v_vars where var_value = :val limit 1",
+				        ['val' => $tone_value],
+				        'row'
+				    );
+				    $tone_name = $var_row['var_name'] ?? $this->truncate($tone_value, 30);
+				    $t_id = 'tone_' . ($this->node_counter++);
+				    $this->add_node($t_id, "🎵 tone: " . $tone_name, 'tone', '', [], $depth + 1);
+				    $this->add_edge($node_id, $t_id, $digit_label);
+				    continue;
+				}
+
 				// Plain transfer EXT XML CTX
 				if ($action === 'transfer' && preg_match('/^(\S+)\s+XML\s+(\S+)/i', $param, $m)) {
 					$this->lookup_by_extension($m[1], $node_id, $digit_label, $depth + 1);
@@ -851,6 +876,42 @@ class call_flow_map {
 			return;
 		}
 
+		// lua streamfile.lua FILENAME  (play a recording — e.g. after-hours greeting)
+		if (
+		    ($app === 'lua' && preg_match('/^streamfile\.lua\s+(.+)$/i', $data, $m)) ||
+		    ($app === 'menu-exec-app' && preg_match('/^lua\s+streamfile\.lua\s+(.+)$/i', $data, $m))
+		) {
+		    $filename = trim($m[1]);
+		    $r_id = 'recording_' . ($this->node_counter++);
+		    $this->add_node($r_id, "🔊 " . $this->truncate($filename, 30), 'recording', '', [], $depth);
+		    $this->add_edge($parent_id, $r_id, $edge_label);
+		    return;
+		}
+
+		// playback: tone_stream://...  → look up friendly name in v_vars
+		if ($app === 'playback' && preg_match('/^tone_stream:\/\/(.+)$/i', $data, $m)) {
+		    $tone_value = trim($m[1]);
+		    $var_row = $this->database->select(
+		        "select var_name from v_vars where var_value = :val limit 1",
+		        ['val' => $tone_value],
+		        'row'
+		    );
+		    $tone_name = $var_row['var_name'] ?? $this->truncate($tone_value, 30);
+		    $t_id = 'tone_' . ($this->node_counter++);
+		    $this->add_node($t_id, "🎵 tone stream " . $tone_name, 'tone', '', [], $depth);
+		    $this->add_edge($parent_id, $t_id, $edge_label);
+		    return;
+		}
+
+		// playback: /full/path/to/recording.ext  (play a recording)
+		if ($app === 'playback') {
+		    $filename = basename($data);
+		    $r_id = 'recording_' . ($this->node_counter++);
+		    $this->add_node($r_id, "🔊 " . $this->truncate($filename, 30), 'recording', '', [], $depth);
+		    $this->add_edge($parent_id, $r_id, $edge_label);
+		    return;
+		}
+
 		// menu-sub:UUID
 		if ($app === 'menu-sub' && is_uuid($data)) {
 			$this->build_ivr($data, $parent_id, $edge_label, $depth);
@@ -1116,3 +1177,5 @@ class call_flow_map {
 		return mb_strlen($str) > $max ? mb_substr($str, 0, $max - 1) . '…' : $str;
 	}
 }
+
+?>
