@@ -428,11 +428,12 @@ function render_diagram(data) {
 		return props;
 	});
 
-	var styled_edges = data.edges.map(function(e) {
+	var styled_edges = data.edges.map(function(e, i) {
 		return Object.assign({}, e, {
+			id:     e.id || ('e' + i),
 			arrows: { to: { enabled: true, scaleFactor: 0.6, type: 'arrow' } },
 			font:   { size: 11, align: 'middle', color: '#444', strokeWidth: 2, strokeColor: '#fff' },
-			color:  { color: '#555', highlight: '#1565C0', opacity: 0.85 },
+			color:  { color: '#555', highlight: '#555', opacity: 0.85 },
 			width:  1.5,
 			smooth: { type: 'cubicBezier', forceDirection: edge_force_direction, roundness: 0.6 },
 		});
@@ -474,11 +475,19 @@ function render_diagram(data) {
 
 		var free_nodes = styled_nodes.map(function(n) {
 			var pos = positions[n.id] || { x: 0, y: 0 };
-			return Object.assign({}, n, { x: pos.x, y: pos.y });
+			return Object.assign({}, n, {
+				x: pos.x,
+				y: pos.y,
+				chosen: false,
+				opacity: 1,
+			});
 		});
 
+		var nodesDS = new vis.DataSet(free_nodes);
+		var edgesDS = new vis.DataSet(styled_edges);
+
 		network = new vis.Network(container,
-			{ nodes: new vis.DataSet(free_nodes), edges: new vis.DataSet(styled_edges) },
+			{ nodes: nodesDS, edges: edgesDS },
 			{
 				layout:    { hierarchical: { enabled: false } },
 				physics:   { enabled: false },
@@ -488,6 +497,111 @@ function render_diagram(data) {
 
 		var node_map = {};
 		free_nodes.forEach(function(n) { node_map[n.id] = n; });
+
+		var outgoing = {};
+		var incoming = {};
+		styled_edges.forEach(function(e) {
+			if (!outgoing[e.from]) outgoing[e.from] = [];
+			outgoing[e.from].push(e);
+			if (!incoming[e.to]) incoming[e.to] = [];
+			incoming[e.to].push(e);
+		});
+
+		function connected_subgraph(nodeId) {
+			var path_nodes = {};
+			var path_edges = {};
+			path_nodes[nodeId] = true;
+
+			function walk(start, adj, next_key) {
+				var queue = [start];
+				var visited = {};
+				visited[start] = true;
+				while (queue.length) {
+					var cur = queue.shift();
+					(adj[cur] || []).forEach(function(e) {
+						path_edges[e.id] = true;
+						var next = e[next_key];
+						path_nodes[next] = true;
+						if (!visited[next]) {
+							visited[next] = true;
+							queue.push(next);
+						}
+					});
+				}
+			}
+
+			walk(nodeId, outgoing, 'to');
+			walk(nodeId, incoming, 'from');
+			return { nodes: path_nodes, edges: path_edges };
+		}
+
+		function apply_selection_highlight(nodeId) {
+			var subgraph = connected_subgraph(nodeId);
+
+			nodesDS.update(free_nodes.map(function(n) {
+				if (subgraph.nodes[n.id]) {
+					return {
+						id: n.id,
+						opacity: 1,
+						borderWidth: n.id === nodeId ? 3 : 2,
+						color: n.color,
+						font: n.font,
+					};
+				}
+				return {
+					id: n.id,
+					opacity: 0.22,
+					borderWidth: 1,
+					color: { background: '#E8E8E8', border: '#C0C0C0' },
+					font: Object.assign({}, n.font, { color: '#9E9E9E' }),
+				};
+			}));
+
+			edgesDS.update(styled_edges.map(function(e) {
+				if (subgraph.edges[e.id]) {
+					return {
+						id: e.id,
+						color: { color: '#1565C0', highlight: '#1565C0', opacity: 1 },
+						width: 2.5,
+						font: Object.assign({}, e.font, { color: '#1565C0' }),
+					};
+				}
+				return {
+					id: e.id,
+					color: { color: '#CFCFCF', highlight: '#CFCFCF', opacity: 0.25 },
+					width: 1,
+					font: Object.assign({}, e.font, { color: '#BDBDBD' }),
+				};
+			}));
+		}
+
+		function clear_selection_highlight() {
+			nodesDS.update(free_nodes.map(function(n) {
+				return {
+					id: n.id,
+					opacity: 1,
+					borderWidth: 2,
+					color: n.color,
+					font: n.font,
+				};
+			}));
+			edgesDS.update(styled_edges.map(function(e) {
+				return {
+					id: e.id,
+					color: e.color,
+					width: e.width,
+					font: e.font,
+				};
+			}));
+		}
+
+		network.on('select', function(params) {
+			if (params.nodes.length === 0) {
+				clear_selection_highlight();
+			} else {
+				apply_selection_highlight(params.nodes[0]);
+			}
+		});
 
 		network.on('doubleClick', function(params) {
 			if (params.nodes.length === 0) return;
