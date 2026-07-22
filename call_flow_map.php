@@ -267,6 +267,9 @@ var node_styles = {
 	external:       { color: { background: '#F5F5F5', border: '#616161' }, font: { color: '#424242' } },
 };
 
+// Color legend (same items as the web UI strip above the diagram)
+var legend_items = <?php echo json_encode($legend); ?>;
+
 var network = null;
 
 // Populate destination dropdown when type changes
@@ -413,9 +416,42 @@ function dodownload_png(with_background) {
 	var src = document.querySelector('#diagram-container canvas');
 	if (!src) return;
 
+	// Scale legend to match canvas resolution (retina / DPR)
+	var scale = (src.clientWidth > 0) ? (src.width / src.clientWidth) : 1;
+	var pad = Math.round(16 * scale);
+	var box = Math.round(14 * scale);
+	var gapX = Math.round(18 * scale);
+	var gapY = Math.round(10 * scale);
+	var fontSize = Math.round(12 * scale);
+	var radius = Math.round(3 * scale);
+	var labelGap = Math.round(6 * scale);
+
+	var measure = document.createElement('canvas').getContext('2d');
+	measure.font = fontSize + 'px sans-serif';
+
+	var maxWidth = src.width - pad * 2;
+	var rows = [];
+	var row = [];
+	var rowWidth = 0;
+	legend_items.forEach(function(item) {
+		var itemW = box + labelGap + measure.measureText(item.label).width;
+		if (row.length && rowWidth + gapX + itemW > maxWidth) {
+			rows.push(row);
+			row = [];
+			rowWidth = 0;
+		}
+		if (row.length) rowWidth += gapX;
+		row.push({ item: item, width: itemW });
+		rowWidth += itemW;
+	});
+	if (row.length) rows.push(row);
+
+	var rowH = box + gapY;
+	var legendH = pad + rows.length * rowH + pad;
+
 	var canvas = document.createElement('canvas');
 	canvas.width  = src.width;
-	canvas.height = src.height;
+	canvas.height = src.height + legendH;
 	var ctx = canvas.getContext('2d');
 
 	if (with_background) {
@@ -423,6 +459,35 @@ function dodownload_png(with_background) {
 		ctx.fillRect(0, 0, canvas.width, canvas.height);
 	}
 	ctx.drawImage(src, 0, 0);
+
+	// Legend strip under the diagram
+	ctx.font = fontSize + 'px sans-serif';
+	ctx.textBaseline = 'middle';
+	ctx.lineWidth = Math.max(1, Math.round(scale));
+
+	var y = src.height + pad;
+	rows.forEach(function(r) {
+		var x = pad;
+		r.forEach(function(entry) {
+			var item = entry.item;
+			ctx.beginPath();
+			if (ctx.roundRect) {
+				ctx.roundRect(x, y, box, box, radius);
+			}
+			else {
+				ctx.rect(x, y, box, box);
+			}
+			ctx.fillStyle = item.bg;
+			ctx.fill();
+			ctx.strokeStyle = item.border;
+			ctx.stroke();
+
+			ctx.fillStyle = '#333333';
+			ctx.fillText(item.label, x + box + labelGap, y + box / 2);
+			x += entry.width + gapX;
+		});
+		y += rowH;
+	});
 
 	var link = document.createElement('a');
 	link.download = 'call_flow_map.png';
