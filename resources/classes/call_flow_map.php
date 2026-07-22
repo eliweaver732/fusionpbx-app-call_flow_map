@@ -537,8 +537,13 @@ class call_flow_map {
 
 		$name   = $row['call_flow_name'] ?? 'Call Flow';
 		$ext    = !empty($row['call_flow_extension']) ? ' (' . $row['call_flow_extension'] . ')' : '';
-		$status = !empty($row['call_flow_status']) ? "\nStatus: " . $row['call_flow_status'] : '';
-		$this->add_node($node_id, "🔄 " . $name . $ext . $status, 'call_flow', 'Call Flow: ' . $name, [], $depth);
+		// Mirror FusionPBX call_flows list: status true → primary label, false → alternate
+		$status_text = ($row['call_flow_status'] ?? '') != 'false'
+			? (!empty($row['call_flow_label']) ? $row['call_flow_label'] : 'Active')
+			: (!empty($row['call_flow_alternate_label']) ? $row['call_flow_alternate_label'] : 'Alternate');
+		$status = "\nStatus: " . $status_text;
+		$dial   = !empty($row['call_flow_feature_code']) ? "\nDial Code: " . $row['call_flow_feature_code'] : '';
+		$this->add_node($node_id, "🔄 " . $name . $ext . $status . $dial, 'call_flow', 'Call Flow: ' . $name, [], $depth);
 
 		if ($parent_id !== null) {
 			$this->add_edge($parent_id, $node_id, $edge_label);
@@ -784,7 +789,13 @@ class call_flow_map {
 				$n_id = 'cf_' . $cf['call_flow_uuid'];
 				if (!in_array($n_id, $this->visited)) {
 					$this->visited[] = $n_id;
-					$this->add_node($n_id, "🔄 " . $cf['call_flow_name'] . "\n(" . $cf['call_flow_extension'] . ")", 'call_flow', 'Call Flow: ' . $cf['call_flow_name'], [], 0);
+					$cf_ext = !empty($cf['call_flow_extension']) ? ' (' . $cf['call_flow_extension'] . ')' : '';
+					$cf_status_text = ($cf['call_flow_status'] ?? '') != 'false'
+						? (!empty($cf['call_flow_label']) ? $cf['call_flow_label'] : 'Active')
+						: (!empty($cf['call_flow_alternate_label']) ? $cf['call_flow_alternate_label'] : 'Alternate');
+					$cf_status = "\nStatus: " . $cf_status_text;
+					$cf_dial = !empty($cf['call_flow_feature_code']) ? "\nDial Code: " . $cf['call_flow_feature_code'] : '';
+					$this->add_node($n_id, "🔄 " . $cf['call_flow_name'] . $cf_ext . $cf_status . $cf_dial, 'call_flow', 'Call Flow: ' . $cf['call_flow_name'], [], 0);
 				}
 				$this->add_edge($n_id, $ext_node_id, $edge_label);
 			}
