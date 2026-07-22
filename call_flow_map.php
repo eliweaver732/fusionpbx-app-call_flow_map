@@ -90,7 +90,8 @@
 <style>
 	#diagram-container {
 		width: 100%;
-		height: 600px;
+		min-height: 320px;
+		height: 600px; /* fallback until JS measures available viewport */
 		border: 1px solid var(--container-border-color, #ccc);
 		border-radius: 4px;
 		background: var(--input-background-color, #fff);
@@ -268,6 +269,58 @@ var node_styles = {
 };
 
 var network = null;
+var diagram_resize_timer = null;
+
+// Fill remaining viewport height while respecting FusionPBX chrome/padding.
+function size_diagram_container() {
+	var el = document.getElementById('diagram-container');
+	if (!el) return;
+
+	var top = el.getBoundingClientRect().top;
+	var bottom_gap = 0;
+
+	// Card wrapper padding below the diagram
+	var wrapper = el.parentElement;
+	if (wrapper) {
+		var wrapper_style = window.getComputedStyle(wrapper);
+		bottom_gap += parseFloat(wrapper_style.paddingBottom) || 0;
+		bottom_gap += parseFloat(wrapper_style.marginBottom) || 0;
+
+		var card = wrapper.parentElement;
+		if (card) {
+			var card_style = window.getComputedStyle(card);
+			bottom_gap += parseFloat(card_style.paddingBottom) || 0;
+			bottom_gap += parseFloat(card_style.marginBottom) || 0;
+		}
+	}
+
+	// Theme #main_content bottom padding (keeps FusionPBX page margins)
+	var main = document.getElementById('main_content');
+	if (main) {
+		bottom_gap += parseFloat(window.getComputedStyle(main).paddingBottom) || 0;
+	}
+	else {
+		bottom_gap += 16;
+	}
+
+	var height = Math.max(320, Math.floor(window.innerHeight - top - bottom_gap));
+	el.style.height = height + 'px';
+
+	if (network) {
+		network.setSize(el.clientWidth + 'px', height + 'px');
+	}
+}
+
+function on_diagram_resize() {
+	clearTimeout(diagram_resize_timer);
+	diagram_resize_timer = setTimeout(size_diagram_container, 100);
+}
+
+window.addEventListener('resize', on_diagram_resize);
+if (typeof $ !== 'undefined') {
+	$(window).on('resizeEnd', size_diagram_container);
+}
+document.addEventListener('DOMContentLoaded', size_diagram_container);
 
 // Populate destination dropdown when type changes
 function populateDestinations(type) {
@@ -290,6 +343,7 @@ function render_diagram(data) {
 	placeholder.style.display = 'none';
 	document.getElementById('btn-fit').style.display = 'none';
 	document.getElementById('btn-png').style.display = 'none';
+	size_diagram_container();
 
 	if (!data || !data.nodes || data.nodes.length === 0) {
 		placeholder.textContent = <?php echo json_encode($text['message-no_data']); ?>;
@@ -380,6 +434,7 @@ function render_diagram(data) {
 		});
 
 		loading_element.style.display = 'none';
+		size_diagram_container();
 		network.fit({ animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
 		document.getElementById('btn-fit').style.display = '';
 		document.getElementById('btn-png').style.display = '';
