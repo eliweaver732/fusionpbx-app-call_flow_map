@@ -58,9 +58,10 @@
 		exit;
 	}
 
-//selected type/uuid from GET
+//selected type/uuid/layout from GET
 	$selected_type = $_GET['type'] ?? '';
 	$selected_uuid = $_GET['id'] ?? '';
+	$selected_layout = strtoupper($_GET['layout'] ?? 'UD');
 
 //validate
 	if (!empty($selected_type)) {
@@ -68,6 +69,9 @@
 	}
 	if (!empty($selected_uuid) && !is_uuid($selected_uuid)) {
 		$selected_uuid = '';
+	}
+	if ($selected_layout !== 'LR') {
+		$selected_layout = 'UD';
 	}
 
 //pre-load diagram data if both type and uuid are set
@@ -90,7 +94,8 @@
 <style>
 	#diagram-container {
 		width: 100%;
-		height: 600px;
+		min-height: 320px;
+		height: 600px; /* fallback until JS measures available viewport */
 		border: 1px solid var(--container-border-color, #ccc);
 		border-radius: 4px;
 		background: var(--input-background-color, #fff);
@@ -139,6 +144,38 @@
 		font-size: 16px;
 		color: #555;
 		z-index: 10;
+	}
+	.layout-toggle {
+		display: inline-flex;
+		border: 1px solid var(--input-border-color, #ccc);
+		border-radius: 4px;
+		overflow: hidden;
+		background: var(--input-background-color, #fff);
+	}
+	.layout-toggle-btn {
+		appearance: none;
+		border: 0;
+		background: transparent;
+		padding: 6px 12px;
+		font-size: 13px;
+		line-height: 1.2;
+		cursor: pointer;
+		color: var(--text-color, #444);
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+	}
+	.layout-toggle-btn + .layout-toggle-btn {
+		border-left: 1px solid var(--input-border-color, #ccc);
+	}
+	.layout-toggle-btn.active {
+		background: var(--button-background-color, #1565C0);
+		color: var(--button-color, #fff);
+	}
+	.layout-toggle-btn:focus-visible {
+		outline: 2px solid var(--button-background-color, #1565C0);
+		outline-offset: -2px;
+		z-index: 1;
 	}
 
 </style>
@@ -205,6 +242,19 @@ echo "				</select>\n";
 echo "			</div>\n";
 
 echo "			<div>\n";
+echo "				<label class='lbl' style='display:block; margin-bottom:4px;'>".($text['label-layout'] ?? 'Layout')."</label>\n";
+echo "				<div class='layout-toggle' id='layout-toggle' role='group' aria-label='".escape($text['label-layout'] ?? 'Layout')."'>\n";
+echo "					<button type='button' class='layout-toggle-btn".($selected_layout === 'UD' ? ' active' : '')."' data-layout='UD' onclick='set_layout(\"UD\");' title='".escape($text['label-layout_top_down'] ?? 'Top-Down')."'>\n";
+echo "						<i class='fas fa-arrow-down'></i> ".escape($text['label-layout_top_down'] ?? 'Top-Down')."\n";
+echo "					</button>\n";
+echo "					<button type='button' class='layout-toggle-btn".($selected_layout === 'LR' ? ' active' : '')."' data-layout='LR' onclick='set_layout(\"LR\");' title='".escape($text['label-layout_left_right'] ?? 'Left-Right')."'>\n";
+echo "						<i class='fas fa-arrow-right'></i> ".escape($text['label-layout_left_right'] ?? 'Left-Right')."\n";
+echo "					</button>\n";
+echo "				</div>\n";
+echo "				<input type='hidden' name='layout' id='sel-layout' value='".escape($selected_layout)."' />\n";
+echo "			</div>\n";
+
+echo "			<div>\n";
 echo button::create(['type'=>'submit','label'=>$text['button-generate'],'icon'=>'project-diagram']);
 echo "			</div>\n";
 echo "		</div>\n";
@@ -267,7 +317,71 @@ var node_styles = {
 	external:       { color: { background: '#F5F5F5', border: '#616161' }, font: { color: '#424242' } },
 };
 
+// Color legend (same items as the web UI strip above the diagram)
+var legend_items = <?php echo json_encode($legend); ?>;
+
 var network = null;
+var diagram_resize_timer = null;
+
+// Fill remaining viewport height while respecting FusionPBX chrome/padding.
+function size_diagram_container() {
+	var el = document.getElementById('diagram-container');
+	if (!el) return;
+
+	var top = el.getBoundingClientRect().top;
+	var bottom_gap = 0;
+
+	// Card wrapper padding below the diagram
+	var wrapper = el.parentElement;
+	if (wrapper) {
+		var wrapper_style = window.getComputedStyle(wrapper);
+		bottom_gap += parseFloat(wrapper_style.paddingBottom) || 0;
+		bottom_gap += parseFloat(wrapper_style.marginBottom) || 0;
+
+		var card = wrapper.parentElement;
+		if (card) {
+			var card_style = window.getComputedStyle(card);
+			bottom_gap += parseFloat(card_style.paddingBottom) || 0;
+			bottom_gap += parseFloat(card_style.marginBottom) || 0;
+		}
+	}
+
+	// Theme #main_content bottom padding (keeps FusionPBX page margins)
+	var main = document.getElementById('main_content');
+	if (main) {
+		bottom_gap += parseFloat(window.getComputedStyle(main).paddingBottom) || 0;
+	}
+	else {
+		bottom_gap += 16;
+	}
+
+	var height = Math.max(320, Math.floor(window.innerHeight - top - bottom_gap));
+	el.style.height = height + 'px';
+
+	if (network) {
+		network.setSize(el.clientWidth + 'px', height + 'px');
+	}
+}
+
+function on_diagram_resize() {
+	clearTimeout(diagram_resize_timer);
+	diagram_resize_timer = setTimeout(size_diagram_container, 100);
+}
+
+window.addEventListener('resize', on_diagram_resize);
+if (typeof $ !== 'undefined') {
+	$(window).on('resizeEnd', size_diagram_container);
+}
+document.addEventListener('DOMContentLoaded', size_diagram_container);
+
+// Update layout toggle selection (persisted via hidden form field)
+function set_layout(layout) {
+	layout = (layout === 'LR') ? 'LR' : 'UD';
+	document.getElementById('sel-layout').value = layout;
+	document.querySelectorAll('.layout-toggle-btn').forEach(function(btn) {
+		btn.classList.toggle('active', btn.getAttribute('data-layout') === layout);
+	});
+}
 
 // Populate destination dropdown when type changes
 function populateDestinations(type) {
@@ -290,12 +404,16 @@ function render_diagram(data) {
 	placeholder.style.display = 'none';
 	document.getElementById('btn-fit').style.display = 'none';
 	document.getElementById('btn-png').style.display = 'none';
+	size_diagram_container();
 
 	if (!data || !data.nodes || data.nodes.length === 0) {
 		placeholder.textContent = <?php echo json_encode($text['message-no_data']); ?>;
 		placeholder.style.display = 'flex';
 		return;
 	}
+
+	var layout_direction = (document.getElementById('sel-layout').value === 'LR') ? 'LR' : 'UD';
+	var edge_force_direction = (layout_direction === 'LR') ? 'horizontal' : 'vertical';
 
 	var styled_nodes = data.nodes.map(function(n) {
 		var style = node_styles[n.type] || node_styles['external'];
@@ -317,8 +435,7 @@ function render_diagram(data) {
 			font:   { size: 11, align: 'middle', color: '#444', strokeWidth: 2, strokeColor: '#fff' },
 			color:  { color: '#555', highlight: '#555', opacity: 0.85 },
 			width:  1.5,
-			chosen: false,
-			smooth: { type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.6 },
+			smooth: { type: 'cubicBezier', forceDirection: edge_force_direction, roundness: 0.6 },
 		});
 	});
 
@@ -331,7 +448,7 @@ function render_diagram(data) {
 			layout: {
 				hierarchical: {
 					enabled:              true,
-					direction:            'UD',
+					direction:            layout_direction,
 					sortMethod:           'directed',
 					levelSeparation:      140,
 					nodeSpacing:          30,
@@ -495,6 +612,7 @@ function render_diagram(data) {
 		});
 
 		loading_element.style.display = 'none';
+		size_diagram_container();
 		network.fit({ animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
 		document.getElementById('btn-fit').style.display = '';
 		document.getElementById('btn-png').style.display = '';
@@ -528,9 +646,42 @@ function dodownload_png(with_background) {
 	var src = document.querySelector('#diagram-container canvas');
 	if (!src) return;
 
+	// Scale legend to match canvas resolution (retina / DPR)
+	var scale = (src.clientWidth > 0) ? (src.width / src.clientWidth) : 1;
+	var pad = Math.round(16 * scale);
+	var box = Math.round(14 * scale);
+	var gapX = Math.round(18 * scale);
+	var gapY = Math.round(10 * scale);
+	var fontSize = Math.round(12 * scale);
+	var radius = Math.round(3 * scale);
+	var labelGap = Math.round(6 * scale);
+
+	var measure = document.createElement('canvas').getContext('2d');
+	measure.font = fontSize + 'px sans-serif';
+
+	var maxWidth = src.width - pad * 2;
+	var rows = [];
+	var row = [];
+	var rowWidth = 0;
+	legend_items.forEach(function(item) {
+		var itemW = box + labelGap + measure.measureText(item.label).width;
+		if (row.length && rowWidth + gapX + itemW > maxWidth) {
+			rows.push(row);
+			row = [];
+			rowWidth = 0;
+		}
+		if (row.length) rowWidth += gapX;
+		row.push({ item: item, width: itemW });
+		rowWidth += itemW;
+	});
+	if (row.length) rows.push(row);
+
+	var rowH = box + gapY;
+	var legendH = pad + rows.length * rowH + pad;
+
 	var canvas = document.createElement('canvas');
 	canvas.width  = src.width;
-	canvas.height = src.height;
+	canvas.height = src.height + legendH;
 	var ctx = canvas.getContext('2d');
 
 	if (with_background) {
@@ -538,6 +689,35 @@ function dodownload_png(with_background) {
 		ctx.fillRect(0, 0, canvas.width, canvas.height);
 	}
 	ctx.drawImage(src, 0, 0);
+
+	// Legend strip under the diagram
+	ctx.font = fontSize + 'px sans-serif';
+	ctx.textBaseline = 'middle';
+	ctx.lineWidth = Math.max(1, Math.round(scale));
+
+	var y = src.height + pad;
+	rows.forEach(function(r) {
+		var x = pad;
+		r.forEach(function(entry) {
+			var item = entry.item;
+			ctx.beginPath();
+			if (ctx.roundRect) {
+				ctx.roundRect(x, y, box, box, radius);
+			}
+			else {
+				ctx.rect(x, y, box, box);
+			}
+			ctx.fillStyle = item.bg;
+			ctx.fill();
+			ctx.strokeStyle = item.border;
+			ctx.stroke();
+
+			ctx.fillStyle = '#333333';
+			ctx.fillText(item.label, x + box + labelGap, y + box / 2);
+			x += entry.width + gapX;
+		});
+		y += rowH;
+	});
 
 	var link = document.createElement('a');
 	link.download = 'call_flow_map.png';
