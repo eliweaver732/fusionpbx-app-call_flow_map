@@ -419,6 +419,17 @@ class call_flow_map {
 			$this->resolve_destination($fwd_app, $fwd_data, $node_id, 'No Answer', $depth + 1);
 		}
 
+		// Exit Action / timeout destination (ring_group_timeout_app / ring_group_timeout_data)
+		$timeout_app  = $row['ring_group_timeout_app'] ?? '';
+		$timeout_data = $row['ring_group_timeout_data'] ?? '';
+		if (!empty($timeout_app)) {
+			$exit_label = 'Exit';
+			if (!empty($row['ring_group_exit_key'])) {
+				$exit_label .= ' / Key ' . $row['ring_group_exit_key'];
+			}
+			$this->resolve_destination($timeout_app, $timeout_data, $node_id, $exit_label, $depth + 1);
+		}
+
 		return $node_id;
 	}
 
