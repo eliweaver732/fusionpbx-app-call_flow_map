@@ -58,9 +58,10 @@
 		exit;
 	}
 
-//selected type/uuid from GET
+//selected type/uuid/layout from GET
 	$selected_type = $_GET['type'] ?? '';
 	$selected_uuid = $_GET['id'] ?? '';
+	$selected_layout = strtoupper($_GET['layout'] ?? 'UD');
 
 //validate
 	if (!empty($selected_type)) {
@@ -68,6 +69,9 @@
 	}
 	if (!empty($selected_uuid) && !is_uuid($selected_uuid)) {
 		$selected_uuid = '';
+	}
+	if ($selected_layout !== 'LR') {
+		$selected_layout = 'UD';
 	}
 
 //pre-load diagram data if both type and uuid are set
@@ -140,6 +144,38 @@
 		color: #555;
 		z-index: 10;
 	}
+	.layout-toggle {
+		display: inline-flex;
+		border: 1px solid var(--input-border-color, #ccc);
+		border-radius: 4px;
+		overflow: hidden;
+		background: var(--input-background-color, #fff);
+	}
+	.layout-toggle-btn {
+		appearance: none;
+		border: 0;
+		background: transparent;
+		padding: 6px 12px;
+		font-size: 13px;
+		line-height: 1.2;
+		cursor: pointer;
+		color: var(--text-color, #444);
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+	}
+	.layout-toggle-btn + .layout-toggle-btn {
+		border-left: 1px solid var(--input-border-color, #ccc);
+	}
+	.layout-toggle-btn.active {
+		background: var(--button-background-color, #1565C0);
+		color: var(--button-color, #fff);
+	}
+	.layout-toggle-btn:focus-visible {
+		outline: 2px solid var(--button-background-color, #1565C0);
+		outline-offset: -2px;
+		z-index: 1;
+	}
 
 </style>
 
@@ -202,6 +238,19 @@ if (!empty($selected_type) && !empty($starting_points[$selected_type])) {
 	}
 }
 echo "				</select>\n";
+echo "			</div>\n";
+
+echo "			<div>\n";
+echo "				<label class='lbl' style='display:block; margin-bottom:4px;'>".($text['label-layout'] ?? 'Layout')."</label>\n";
+echo "				<div class='layout-toggle' id='layout-toggle' role='group' aria-label='".escape($text['label-layout'] ?? 'Layout')."'>\n";
+echo "					<button type='button' class='layout-toggle-btn".($selected_layout === 'UD' ? ' active' : '')."' data-layout='UD' onclick='set_layout(\"UD\");' title='".escape($text['label-layout_top_down'] ?? 'Top-Down')."'>\n";
+echo "						<i class='fas fa-arrow-down'></i> ".escape($text['label-layout_top_down'] ?? 'Top-Down')."\n";
+echo "					</button>\n";
+echo "					<button type='button' class='layout-toggle-btn".($selected_layout === 'LR' ? ' active' : '')."' data-layout='LR' onclick='set_layout(\"LR\");' title='".escape($text['label-layout_left_right'] ?? 'Left-Right')."'>\n";
+echo "						<i class='fas fa-arrow-right'></i> ".escape($text['label-layout_left_right'] ?? 'Left-Right')."\n";
+echo "					</button>\n";
+echo "				</div>\n";
+echo "				<input type='hidden' name='layout' id='sel-layout' value='".escape($selected_layout)."' />\n";
 echo "			</div>\n";
 
 echo "			<div>\n";
@@ -269,6 +318,15 @@ var node_styles = {
 
 var network = null;
 
+// Update layout toggle selection (persisted via hidden form field)
+function set_layout(layout) {
+	layout = (layout === 'LR') ? 'LR' : 'UD';
+	document.getElementById('sel-layout').value = layout;
+	document.querySelectorAll('.layout-toggle-btn').forEach(function(btn) {
+		btn.classList.toggle('active', btn.getAttribute('data-layout') === layout);
+	});
+}
+
 // Populate destination dropdown when type changes
 function populateDestinations(type) {
 	var sel = document.getElementById('sel-uuid');
@@ -297,6 +355,9 @@ function render_diagram(data) {
 		return;
 	}
 
+	var layout_direction = (document.getElementById('sel-layout').value === 'LR') ? 'LR' : 'UD';
+	var edge_force_direction = (layout_direction === 'LR') ? 'horizontal' : 'vertical';
+
 	var styled_nodes = data.nodes.map(function(n) {
 		var style = node_styles[n.type] || node_styles['external'];
 		var props = Object.assign({}, n, style, {
@@ -316,7 +377,7 @@ function render_diagram(data) {
 			font:   { size: 11, align: 'middle', color: '#444', strokeWidth: 2, strokeColor: '#fff' },
 			color:  { color: '#555', highlight: '#1565C0', opacity: 0.85 },
 			width:  1.5,
-			smooth: { type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.6 },
+			smooth: { type: 'cubicBezier', forceDirection: edge_force_direction, roundness: 0.6 },
 		});
 	});
 
@@ -329,7 +390,7 @@ function render_diagram(data) {
 			layout: {
 				hierarchical: {
 					enabled:              true,
-					direction:            'UD',
+					direction:            layout_direction,
 					sortMethod:           'directed',
 					levelSeparation:      140,
 					nodeSpacing:          30,
