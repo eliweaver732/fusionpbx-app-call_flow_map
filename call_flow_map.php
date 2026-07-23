@@ -327,6 +327,7 @@ var CARD_LAYOUT = {
 	padTop: 6,
 	padBottom: 6,
 	rowH: 24,
+	rowGap: 3,
 	sectionLineH: 18,
 	sectionPad: 4,
 	footerH: 30,
@@ -349,16 +350,21 @@ function card_style_for(type) {
 	return node_styles[type] || node_styles['external'];
 }
 
+/** Banded list rows: IVR options, RG members, CC agents, etc. */
+function is_banded_row(item) {
+	return item && (item.type === 'row' || item.type === 'item');
+}
+
 function measure_card(card) {
 	var L = CARD_LAYOUT;
 	var w = L.width;
 	var h = L.titleH + L.nameH + L.padTop;
-	var ports = { in: { x: -w / 2, y: 0 } };
+	// x is half-width magnitude; glue_ports applies left/right sign from neighbor positions
+	var ports = { in: { x: w / 2, y: 0 } };
 
-	// First pass: compute body height and port y offsets from top of card
 	var cursor = L.titleH + L.nameH + L.padTop;
 	var body = (card && card.body) ? card.body : [];
-	body.forEach(function(item) {
+	body.forEach(function(item, idx) {
 		if (item.type === 'section') {
 			cursor += L.sectionPad;
 			var lines = item.lines || [];
@@ -374,6 +380,9 @@ function measure_card(card) {
 				ports[item.port] = { x: w / 2, yTop: cursor + L.rowH / 2 };
 			}
 			cursor += L.rowH;
+			if (is_banded_row(item) && idx < body.length - 1 && is_banded_row(body[idx + 1])) {
+				cursor += L.rowGap;
+			}
 		}
 	});
 	cursor += L.padBottom;
@@ -383,7 +392,6 @@ function measure_card(card) {
 		cursor += L.footerH;
 	}
 	h = Math.max(cursor, L.titleH + L.nameH + 20);
-	// Convert yTop (from top of card) to offset from center
 	Object.keys(ports).forEach(function(pid) {
 		if (ports[pid].yTop !== undefined) {
 			ports[pid].y = ports[pid].yTop - h / 2;
@@ -423,16 +431,6 @@ function make_card_ctx_renderer(node) {
 			}
 		}
 
-		function draw_exit_dot(cx, cy) {
-			ctx.beginPath();
-			ctx.arc(cx, cy, L.portR, 0, Math.PI * 2);
-			ctx.fillStyle = muted ? '#9E9E9E' : colors.border;
-			ctx.fill();
-			ctx.lineWidth = 1.5;
-			ctx.strokeStyle = '#ffffff';
-			ctx.stroke();
-		}
-
 		return {
 			drawNode: function() {
 				ctx.save();
@@ -470,14 +468,13 @@ function make_card_ctx_renderer(node) {
 
 				var textColor = muted ? '#9E9E9E' : colors.font;
 				var rowBg = muted ? '#D0D0D0' : (colors.row || colors.titlebar);
-				var exitX = left + w - 1;
-				var exitDots = [];
+				var bodyItems = card.body || [];
 
-				// Body (option/section rows with darker bands)
+				// Body (banded option/member rows with small gaps)
 				var cursor = top + L.titleH + L.nameH + L.padTop;
 				ctx.font = L.bodyFont;
 				ctx.textBaseline = 'middle';
-				(card.body || []).forEach(function(item) {
+				bodyItems.forEach(function(item, idx) {
 					if (item.type === 'section') {
 						cursor += L.sectionPad;
 						var lines = item.lines || [];
@@ -492,21 +489,18 @@ function make_card_ctx_renderer(node) {
 							ctx.fillText(line, left + L.padX, cursor + L.sectionLineH / 2, w - L.padX * 2 - 12);
 							cursor += L.sectionLineH;
 						});
-						if (item.port) {
-							exitDots.push({ x: exitX, y: sectionTop + sectionH / 2 });
-						}
 						cursor += L.sectionPad;
 					} else {
-						if (item.port) {
+						if (is_banded_row(item)) {
 							ctx.fillStyle = rowBg;
 							ctx.fillRect(left + 1, cursor, w - 2, L.rowH);
 						}
 						ctx.fillStyle = textColor;
 						ctx.fillText(item.text || '', left + L.padX, cursor + L.rowH / 2, w - L.padX * 2 - 12);
-						if (item.port) {
-							exitDots.push({ x: exitX, y: cursor + L.rowH / 2 });
-						}
 						cursor += L.rowH;
+						if (is_banded_row(item) && idx < bodyItems.length - 1 && is_banded_row(bodyItems[idx + 1])) {
+							cursor += L.rowGap;
+						}
 					}
 				});
 
@@ -515,7 +509,6 @@ function make_card_ctx_renderer(node) {
 					ctx.font = L.bodyFont;
 					ctx.fillStyle = textColor;
 					ctx.fillText(card.timeout.label || '', left + L.padX, top + h - L.footerH / 2, w - L.padX * 2 - 12);
-					exitDots.push({ x: exitX, y: top + h - L.footerH / 2 });
 				}
 
 				// Border
@@ -534,9 +527,6 @@ function make_card_ctx_renderer(node) {
 				ctx.font = L.nameFont;
 				ctx.fillText(card.name || '', left + L.padX, top + L.titleH + L.nameH / 2, w - L.padX * 2);
 
-				// Exit connector dots on top of border
-				exitDots.forEach(function(d) { draw_exit_dot(d.x, d.y); });
-
 				ctx.restore();
 			},
 			nodeDimensions: { width: w, height: h },
@@ -552,56 +542,135 @@ function port_id(cardId, port) {
 	return cardId + '::' + port;
 }
 
-function build_port_nodes(card_nodes) {
+function port_name_from_id(pid) {
+	var idx = pid.indexOf('::');
+	return idx === -1 ? '' : pid.slice(idx + 2);
+}
+
+function card_id_from_port(pid) {
+	var idx = pid.indexOf('::');
+	return idx === -1 ? pid : pid.slice(0, idx);
+}
+
+function is_ingress_port(pname) {
+	return pname === 'in' || pname.indexOf('in_') === 0;
+}
+
+function make_invisible_port(pid, parentId, pname, x, y) {
+	return {
+		id: pid,
+		x: x,
+		y: y,
+		shape: 'dot',
+		size: 1,
+		color: { background: 'rgba(0,0,0,0)', border: 'rgba(0,0,0,0)' },
+		borderWidth: 0,
+		physics: false,
+		fixed: { x: true, y: true },
+		chosen: false,
+		label: undefined,
+		title: undefined,
+		opacity: 0,
+		_is_port: true,
+		_parent: parentId,
+		_port: pname,
+	};
+}
+
+function build_port_nodes(card_nodes, edges) {
 	var ports = [];
 	port_parent = {};
 	card_ports = {};
+
 	card_nodes.forEach(function(n) {
 		var dims = n._card_dims || measure_card(n.card || {});
 		n._card_dims = dims;
 		card_ports[n.id] = [];
 		Object.keys(dims.ports).forEach(function(pname) {
+			if (pname === 'in') return; // per-edge ingress created below
 			var pid = port_id(n.id, pname);
 			card_ports[n.id].push(pid);
 			port_parent[pid] = n.id;
-			// Invisible anchors — exit circles are drawn on the card itself
-			ports.push({
-				id: pid,
-				x: (n.x || 0) + dims.ports[pname].x,
-				y: (n.y || 0) + dims.ports[pname].y,
-				shape: 'dot',
-				size: 1,
-				color: { background: 'rgba(0,0,0,0)', border: 'rgba(0,0,0,0)' },
-				borderWidth: 0,
-				physics: false,
-				fixed: { x: true, y: true },
-				chosen: false,
-				label: undefined,
-				title: undefined,
-				opacity: 0,
-				_is_port: true,
-				_parent: n.id,
-				_port: pname,
-			});
+			ports.push(make_invisible_port(
+				pid, n.id, pname,
+				(n.x || 0) + dims.ports[pname].x,
+				(n.y || 0) + dims.ports[pname].y
+			));
 		});
 	});
+
+	// Unique ingress port per edge so each arrow can attach to the facing side
+	(edges || []).forEach(function(e, ei) {
+		var eid = e.id || ('e' + ei);
+		var toCard = e._to_card || e.to;
+		var pname = 'in_' + eid;
+		var pid = port_id(toCard, pname);
+		if (port_parent[pid]) return;
+		var card = null;
+		for (var ci = 0; ci < card_nodes.length; ci++) {
+			if (card_nodes[ci].id === toCard) { card = card_nodes[ci]; break; }
+		}
+		if (!card) return;
+		var dims = card._card_dims || measure_card(card.card || {});
+		card_ports[toCard] = card_ports[toCard] || [];
+		card_ports[toCard].push(pid);
+		port_parent[pid] = toCard;
+		ports.push(make_invisible_port(
+			pid, toCard, pname,
+			(card.x || 0) - dims.width / 2,
+			(card.y || 0)
+		));
+	});
+
 	return ports;
 }
 
-function glue_ports_to_cards(nodesDS, card_nodes) {
+/**
+ * Place ports on the side facing the connected card so edges never cross through a node.
+ * Exit ports face their child; ingress ports face their parent.
+ */
+function glue_ports_to_cards(nodesDS, card_nodes, edges) {
 	if (!network || !card_nodes || !card_nodes.length) return;
-	var ids = card_nodes.map(function(n) { return n.id; });
-	// Live positions during drag (DataSet x/y stay stale until dragEnd)
-	var positions = network.getPositions(ids);
+	var positions = network.getPositions();
+	var exit_target = {};
+	var in_source = {};
+
+	(edges || []).forEach(function(e) {
+		var fromCard = is_port_id(e.from) ? port_parent[e.from] : e.from;
+		var toCard = is_port_id(e.to) ? port_parent[e.to] : e.to;
+		if (is_port_id(e.from)) exit_target[e.from] = toCard;
+		if (is_port_id(e.to)) in_source[e.to] = fromCard;
+	});
+
 	var updates = [];
 	card_nodes.forEach(function(n) {
 		var pos = positions[n.id];
 		if (!pos) return;
 		var dims = n._card_dims || measure_card(n.card || {});
-		Object.keys(dims.ports).forEach(function(pname) {
-			var pid = port_id(n.id, pname);
-			var x = pos.x + dims.ports[pname].x;
-			var y = pos.y + dims.ports[pname].y;
+		var halfW = dims.width / 2;
+
+		(card_ports[n.id] || []).forEach(function(pid) {
+			var pname = port_name_from_id(pid);
+			var yOff = 0;
+			var side = 1; // default right
+
+			if (is_ingress_port(pname)) {
+				yOff = 0;
+				var src = in_source[pid];
+				var srcPos = src ? positions[src] : null;
+				// Parent on our left → enter on left; parent on our right → enter on right
+				side = (srcPos && srcPos.x > pos.x) ? 1 : -1;
+			} else {
+				var base = dims.ports[pname];
+				yOff = base ? base.y : 0;
+				var tgt = exit_target[pid];
+				var tgtPos = tgt ? positions[tgt] : null;
+				// Child on our right → exit on right; child on our left → exit on left
+				side = (tgtPos && tgtPos.x < pos.x) ? -1 : 1;
+			}
+
+			var x = pos.x + side * halfW;
+			var y = pos.y + yOff;
 			try {
 				network.moveNode(pid, x, y);
 			} catch (err) { /* port may not exist yet */ }
@@ -613,32 +682,106 @@ function glue_ports_to_cards(nodesDS, card_nodes) {
 
 function rewire_edges_to_ports(edges, fallback_map) {
 	return edges.map(function(e, i) {
+		var eid = e.id || ('e' + i);
 		var from = e.from;
 		var to = e.to;
 		var from_port = e.from_port || '';
-		var to_port = e.to_port || 'in';
 		if (from_port) {
 			from = port_id(e.from, from_port);
 		}
-		if (to_port) {
-			to = port_id(e.to, to_port);
-		}
-		// If port missing (layout safety), fall back to card ids
+		// Per-edge ingress on the target card
+		to = port_id(e.to, 'in_' + eid);
+
 		if (fallback_map && !fallback_map[from]) from = e.from;
 		if (fallback_map && !fallback_map[to]) to = e.to;
 
 		var label = e.label || '';
-		// Hide labels when row/timeout ports carry the meaning
 		if (from_port && (from_port.indexOf('opt_') === 0 || from_port === 'timeout' || from_port.indexOf('action_') === 0 || from_port.indexOf('ring_') === 0 || from_port === 'primary' || from_port === 'alternate')) {
 			label = '';
 		}
 
 		return Object.assign({}, e, {
-			id: e.id || ('e' + i),
+			id: eid,
 			from: from,
 			to: to,
 			label: label,
+			_from_card: e.from,
+			_to_card: e.to,
 		});
+	});
+}
+
+function draw_port_connectors(ctx, free_nodes, edges) {
+	if (!network) return;
+	var used = {};
+	(edges || []).forEach(function(e) {
+		used[e.from] = true;
+		used[e.to] = true;
+	});
+	var positions = network.getPositions();
+	var L = CARD_LAYOUT;
+	free_nodes.forEach(function(n) {
+		if (n._muted) return;
+		var colors = card_style_for(n.type);
+		(card_ports[n.id] || []).forEach(function(pid) {
+			if (!used[pid]) return;
+			var pname = port_name_from_id(pid);
+			var p = positions[pid];
+			if (!p) return;
+			ctx.beginPath();
+			ctx.arc(p.x, p.y, L.portR, 0, Math.PI * 2);
+			if (is_ingress_port(pname)) {
+				ctx.fillStyle = '#ffffff';
+				ctx.fill();
+				ctx.lineWidth = 2;
+				ctx.strokeStyle = colors.border;
+				ctx.stroke();
+			} else {
+				ctx.fillStyle = colors.border;
+				ctx.fill();
+				ctx.lineWidth = 1.5;
+				ctx.strokeStyle = '#ffffff';
+				ctx.stroke();
+			}
+		});
+	});
+}
+
+/**
+ * Spread card positions into columns/rows so the graph fills ~fillRatio of the viewport.
+ * Uses independent X/Y scales so both axes can reach the target coverage.
+ */
+function spread_nodes_to_viewport(nodes, container, fillRatio) {
+	fillRatio = (fillRatio == null) ? 0.8 : fillRatio;
+	if (!nodes || !nodes.length || !container) return;
+
+	var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+	nodes.forEach(function(n) {
+		var dims = n._card_dims || measure_card(n.card || {});
+		var hw = dims.width / 2;
+		var hh = dims.height / 2;
+		minX = Math.min(minX, n.x - hw);
+		maxX = Math.max(maxX, n.x + hw);
+		minY = Math.min(minY, n.y - hh);
+		maxY = Math.max(maxY, n.y + hh);
+	});
+
+	var bw = Math.max(maxX - minX, 1);
+	var bh = Math.max(maxY - minY, 1);
+	var vw = Math.max(container.clientWidth || 0, 400);
+	var vh = Math.max(container.clientHeight || 0, 320);
+	var targetW = vw * fillRatio;
+	var targetH = vh * fillRatio;
+
+	// Expand only (never compress a large graph); stretch axes independently
+	var scaleX = Math.max(targetW / bw, 1);
+	var scaleY = Math.max(targetH / bh, 1);
+
+	var cx = (minX + maxX) / 2;
+	var cy = (minY + maxY) / 2;
+	nodes.forEach(function(n) {
+		n.x = (n.x - cx) * scaleX;
+		n.y = (n.y - cy) * scaleY;
 	});
 }
 
@@ -731,11 +874,14 @@ function render_diagram(data) {
 		return;
 	}
 
-	// Always flow left → right; toggle only changes stacking density
+	// Always flow left → right; toggle only changes stacking density.
+	// Separations must exceed card size or columns/rows overlap.
+	var cardW = CARD_LAYOUT.width;
+	var cardH = CARD_LAYOUT.titleH + CARD_LAYOUT.nameH + CARD_LAYOUT.footerH + 80;
 	var stack_mode = (document.getElementById('sel-layout').value === 'LR') ? 'spread' : 'compact';
 	var stack = (stack_mode === 'spread')
-		? { levelSeparation: 300, nodeSpacing: 56, treeSpacing: 90, nodeDistance: 150 }
-		: { levelSeparation: 240, nodeSpacing: 32, treeSpacing: 55, nodeDistance: 120 };
+		? { levelSeparation: cardW + 160, nodeSpacing: cardH + 40, treeSpacing: cardH + 60, nodeDistance: cardH + 80 }
+		: { levelSeparation: cardW + 100, nodeSpacing: cardH + 16, treeSpacing: cardH + 30, nodeDistance: cardH + 40 };
 
 	var styled_nodes = data.nodes.map(function(n) {
 		var colors = card_style_for(n.type);
@@ -818,12 +964,23 @@ function render_diagram(data) {
 			return copy;
 		});
 
-		var port_nodes = build_port_nodes(free_nodes);
+		// Stretch columns/rows to fill ~80% of the diagram viewport
+		spread_nodes_to_viewport(free_nodes, container, 0.8);
+
+		var edge_seed = data.edges.map(function(e, i) {
+			return Object.assign({}, e, {
+				id: e.id || ('e' + i),
+				_from_card: e.from,
+				_to_card: e.to,
+			});
+		});
+
+		var port_nodes = build_port_nodes(free_nodes, edge_seed);
 		var port_map = {};
 		port_nodes.forEach(function(p) { port_map[p.id] = true; });
 		free_nodes.forEach(function(n) { port_map[n.id] = true; });
 
-		var wired_edges = rewire_edges_to_ports(data.edges, port_map).map(function(e) {
+		var wired_edges = rewire_edges_to_ports(edge_seed, port_map).map(function(e) {
 			return Object.assign({}, e, {
 				arrows: { to: { enabled: true, scaleFactor: 0.7, type: 'arrow' } },
 				font:   { size: 12, align: 'middle', color: '#444', strokeWidth: 2, strokeColor: '#fff' },
@@ -853,16 +1010,13 @@ function render_diagram(data) {
 			}
 		);
 
-		// Keep ports glued while dragging cards
+		// Initial side-aware port placement
+		glue_ports_to_cards(nodesDS, free_nodes, wired_edges);
+
+		// Keep ports glued + flipped to the facing side while dragging
 		network.on('dragging', function(params) {
 			if (!params.nodes || !params.nodes.length) return;
-			var cards = [];
-			params.nodes.forEach(function(id) {
-				if (is_port_id(id)) return;
-				var n = free_nodes.find(function(fn) { return fn.id === id; });
-				if (n) cards.push(n);
-			});
-			if (cards.length) glue_ports_to_cards(nodesDS, cards);
+			glue_ports_to_cards(nodesDS, free_nodes, wired_edges);
 		});
 		network.on('dragEnd', function(params) {
 			var positions = network.getPositions();
@@ -876,7 +1030,11 @@ function render_diagram(data) {
 				}
 			});
 			if (card_updates.length) nodesDS.update(card_updates);
-			glue_ports_to_cards(nodesDS, free_nodes);
+			glue_ports_to_cards(nodesDS, free_nodes, wired_edges);
+		});
+
+		network.on('afterDrawing', function(ctx) {
+			draw_port_connectors(ctx, free_nodes, wired_edges);
 		});
 
 		var node_map = {};

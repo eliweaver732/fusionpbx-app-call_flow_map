@@ -444,7 +444,7 @@ class call_flow_map {
 			$body[] = ['type' => 'text', 'text' => $strategy];
 		}
 		foreach ($inline_lines as $line) {
-			$body[] = ['type' => 'text', 'text' => $line];
+			$body[] = ['type' => 'item', 'text' => $line];
 		}
 		foreach ($routable_dests as $i => $dest) {
 			$number = $dest['destination_number'];
@@ -574,7 +574,7 @@ class call_flow_map {
 		}
 		if (!empty($agents)) {
 			foreach ($agents as $a) {
-				$body[] = ['type' => 'text', 'text' => '👤 ' . ($a['agent_name'] ?? '')];
+				$body[] = ['type' => 'item', 'text' => '👤 ' . ($a['agent_name'] ?? '')];
 			}
 		}
 
@@ -1416,6 +1416,7 @@ class call_flow_map {
 	 *
 	 * body items:
 	 *   ['type'=>'text','text'=>'...']
+	 *   ['type'=>'item','text'=>'...']              // banded member/agent row (no port)
 	 *   ['type'=>'row','text'=>'...','port'=>'opt_1']
 	 *   ['type'=>'section','lines'=>[...],'port'=>'action_1']
 	 */
