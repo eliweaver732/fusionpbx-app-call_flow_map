@@ -303,18 +303,34 @@ echo "</form>\n";
 // Starting points data (for dynamic population of destination select)
 var starting_points = <?php echo json_encode($starting_points); ?>;
 
-// Node style map
+// Node style map (body fill / border / titlebar / footer)
 var node_styles = {
-	inbound:        { color: { background: '#BBDEFB', border: '#1565C0' }, font: { color: '#0D47A1' } },
-	ivr:            { color: { background: '#FFE0B2', border: '#BF360C' }, font: { color: '#BF360C' } },
-	ring_group:     { color: { background: '#C8E6C9', border: '#1B5E20' }, font: { color: '#1B5E20' } },
-	extension:      { color: { background: '#B2EBF2', border: '#006064' }, font: { color: '#006064' } },
-	call_flow:      { color: { background: '#B3E5FC', border: '#01579B' }, font: { color: '#01579B' } },
-	time_condition: { color: { background: '#FFF9C4', border: '#F57F17' }, font: { color: '#E65100' } },
-	contact_center: { color: { background: '#DCEDC8', border: '#33691E' }, font: { color: '#1B5E20' } },
-	voicemail:      { color: { background: '#E1BEE7', border: '#6A1B9A' }, font: { color: '#4A148C' } },
-	hangup:         { color: { background: '#FFCDD2', border: '#B71C1C' }, font: { color: '#B71C1C' } },
-	external:       { color: { background: '#F5F5F5', border: '#616161' }, font: { color: '#424242' } },
+	inbound:        { background: '#BBDEFB', border: '#1565C0', titlebar: '#90CAF9', footer: '#A8D0F0', font: '#0D47A1' },
+	ivr:            { background: '#FFE0B2', border: '#BF360C', titlebar: '#FFB74D', footer: '#F5C896', font: '#BF360C' },
+	ring_group:     { background: '#C8E6C9', border: '#1B5E20', titlebar: '#81C784', footer: '#A5D6A7', font: '#1B5E20' },
+	extension:      { background: '#B2EBF2', border: '#006064', titlebar: '#4DD0E1', footer: '#80DEEA', font: '#006064' },
+	call_flow:      { background: '#B3E5FC', border: '#01579B', titlebar: '#4FC3F7', footer: '#81D4FA', font: '#01579B' },
+	time_condition: { background: '#FFF9C4', border: '#F57F17', titlebar: '#FFF176', footer: '#F0E68C', font: '#E65100' },
+	contact_center: { background: '#DCEDC8', border: '#33691E', titlebar: '#AED581', footer: '#C5E1A5', font: '#1B5E20' },
+	voicemail:      { background: '#E1BEE7', border: '#6A1B9A', titlebar: '#CE93D8', footer: '#D1A7DB', font: '#4A148C' },
+	hangup:         { background: '#FFCDD2', border: '#B71C1C', titlebar: '#EF9A9A', footer: '#F0B0B0', font: '#B71C1C' },
+	recording:      { background: '#F5F5F5', border: '#616161', titlebar: '#E0E0E0', footer: '#EEEEEE', font: '#424242' },
+	tone:           { background: '#F5F5F5', border: '#616161', titlebar: '#E0E0E0', footer: '#EEEEEE', font: '#424242' },
+	external:       { background: '#F5F5F5', border: '#616161', titlebar: '#E0E0E0', footer: '#EEEEEE', font: '#424242' },
+};
+
+var CARD_LAYOUT = {
+	width: 232,
+	titleH: 26,
+	nameH: 16,
+	padX: 8,
+	padTop: 4,
+	padBottom: 4,
+	rowH: 16,
+	sectionLineH: 14,
+	sectionPad: 3,
+	footerH: 22,
+	radius: 4,
 };
 
 // Color legend (same items as the web UI strip above the diagram)
@@ -322,6 +338,261 @@ var legend_items = <?php echo json_encode($legend); ?>;
 
 var network = null;
 var diagram_resize_timer = null;
+var port_parent = {}; // portId -> parent card id
+var card_ports = {};  // cardId -> [port ids]
+
+function card_style_for(type) {
+	return node_styles[type] || node_styles['external'];
+}
+
+function measure_card(card) {
+	var L = CARD_LAYOUT;
+	var w = L.width;
+	var h = L.titleH + L.nameH + L.padTop;
+	var ports = { in: { x: -w / 2, y: 0 } };
+
+	// First pass: compute body height and port y offsets from top of card
+	var cursor = L.titleH + L.nameH + L.padTop;
+	var body = (card && card.body) ? card.body : [];
+	body.forEach(function(item) {
+		if (item.type === 'section') {
+			cursor += L.sectionPad;
+			var lines = item.lines || [];
+			var sectionTop = cursor;
+			lines.forEach(function() { cursor += L.sectionLineH; });
+			var sectionH = Math.max(L.sectionLineH, cursor - sectionTop);
+			if (item.port) {
+				ports[item.port] = { x: w / 2, yTop: sectionTop + sectionH / 2 };
+			}
+			cursor += L.sectionPad;
+		} else {
+			if (item.port) {
+				ports[item.port] = { x: w / 2, yTop: cursor + L.rowH / 2 };
+			}
+			cursor += L.rowH;
+		}
+	});
+	cursor += L.padBottom;
+	if (card && card.timeout) {
+		var tPort = card.timeout.port || 'timeout';
+		ports[tPort] = { x: w / 2, yTop: cursor + L.footerH / 2 };
+		cursor += L.footerH;
+	}
+	h = Math.max(cursor, L.titleH + L.nameH + 20);
+	// Convert yTop (from top of card) to offset from center
+	Object.keys(ports).forEach(function(pid) {
+		if (ports[pid].yTop !== undefined) {
+			ports[pid].y = ports[pid].yTop - h / 2;
+			delete ports[pid].yTop;
+		} else if (pid === 'in') {
+			ports[pid].y = 0;
+		}
+	});
+	return { width: w, height: h, ports: ports };
+}
+
+function make_card_ctx_renderer(node) {
+	var card = node.card || { title: node.type || 'App', icon: '', name: node.label || '', body: [] };
+	var colors = card_style_for(node.type);
+	var dims = measure_card(card);
+	// stash for port positioning
+	node._card_dims = dims;
+
+	return function(args) {
+		var ctx = args.ctx;
+		var x = args.x;
+		var y = args.y;
+		var selected = args.state && args.state.selected;
+		var L = CARD_LAYOUT;
+		var w = dims.width;
+		var h = dims.height;
+		var left = x - w / 2;
+		var top = y - h / 2;
+		var muted = node._muted === true;
+
+		function round_rect(rx, ry, rw, rh, r) {
+			ctx.beginPath();
+			if (ctx.roundRect) {
+				ctx.roundRect(rx, ry, rw, rh, r);
+			} else {
+				ctx.rect(rx, ry, rw, rh);
+			}
+		}
+
+		return {
+			drawNode: function() {
+				ctx.save();
+				if (muted) ctx.globalAlpha = 0.22;
+
+				// Shadow
+				ctx.shadowColor = 'rgba(0,0,0,0.15)';
+				ctx.shadowBlur = 4;
+				ctx.shadowOffsetX = 2;
+				ctx.shadowOffsetY = 2;
+
+				// Body fill
+				round_rect(left, top, w, h, L.radius);
+				ctx.fillStyle = muted ? '#E8E8E8' : colors.background;
+				ctx.fill();
+				ctx.shadowColor = 'transparent';
+
+				// Titlebar
+				ctx.save();
+				round_rect(left, top, w, h, L.radius);
+				ctx.clip();
+				ctx.fillStyle = muted ? '#C0C0C0' : colors.titlebar;
+				ctx.fillRect(left, top, w, L.titleH + L.nameH);
+				ctx.restore();
+
+				// Footer
+				if (card.timeout) {
+					ctx.save();
+					round_rect(left, top, w, h, L.radius);
+					ctx.clip();
+					ctx.fillStyle = muted ? '#D0D0D0' : colors.footer;
+					ctx.fillRect(left, top + h - L.footerH, w, L.footerH);
+					ctx.restore();
+				}
+
+				// Border
+				round_rect(left, top, w, h, L.radius);
+				ctx.strokeStyle = muted ? '#C0C0C0' : colors.border;
+				ctx.lineWidth = selected ? 3 : 2;
+				ctx.stroke();
+
+				var textColor = muted ? '#9E9E9E' : colors.font;
+
+				// Titlebar text
+				ctx.fillStyle = textColor;
+				ctx.textBaseline = 'middle';
+				ctx.font = 'bold 12px Arial';
+				var titleText = ((card.icon ? card.icon + ' ' : '') + (card.title || '')).trim();
+				ctx.fillText(titleText, left + L.padX, top + L.titleH / 2, w - L.padX * 2);
+
+				ctx.font = '11px Arial';
+				ctx.fillText(card.name || '', left + L.padX, top + L.titleH + L.nameH / 2, w - L.padX * 2);
+
+				// Body
+				var cursor = top + L.titleH + L.nameH + L.padTop;
+				ctx.font = '11px Arial';
+				(card.body || []).forEach(function(item) {
+					if (item.type === 'section') {
+						cursor += L.sectionPad;
+						(item.lines || []).forEach(function(line) {
+							ctx.fillText(line, left + L.padX, cursor + L.sectionLineH / 2, w - L.padX * 2);
+							cursor += L.sectionLineH;
+						});
+						cursor += L.sectionPad;
+					} else {
+						ctx.fillText(item.text || '', left + L.padX, cursor + L.rowH / 2, w - L.padX * 2);
+						cursor += L.rowH;
+					}
+				});
+
+				// Timeout footer label
+				if (card.timeout) {
+					ctx.font = '11px Arial';
+					ctx.fillText(card.timeout.label || '', left + L.padX, top + h - L.footerH / 2, w - L.padX * 2);
+				}
+
+				ctx.restore();
+			},
+			nodeDimensions: { width: w, height: h },
+		};
+	};
+}
+
+function is_port_id(id) {
+	return typeof id === 'string' && id.indexOf('::') !== -1;
+}
+
+function port_id(cardId, port) {
+	return cardId + '::' + port;
+}
+
+function build_port_nodes(card_nodes) {
+	var ports = [];
+	port_parent = {};
+	card_ports = {};
+	card_nodes.forEach(function(n) {
+		var dims = n._card_dims || measure_card(n.card || {});
+		n._card_dims = dims;
+		card_ports[n.id] = [];
+		Object.keys(dims.ports).forEach(function(pname) {
+			var pid = port_id(n.id, pname);
+			card_ports[n.id].push(pid);
+			port_parent[pid] = n.id;
+			ports.push({
+				id: pid,
+				x: (n.x || 0) + dims.ports[pname].x,
+				y: (n.y || 0) + dims.ports[pname].y,
+				shape: 'dot',
+				size: 2,
+				color: { background: 'rgba(0,0,0,0)', border: 'rgba(0,0,0,0)' },
+				borderWidth: 0,
+				physics: false,
+				fixed: { x: true, y: true },
+				chosen: false,
+				label: undefined,
+				title: undefined,
+				opacity: 0,
+				_is_port: true,
+				_parent: n.id,
+				_port: pname,
+			});
+		});
+	});
+	return ports;
+}
+
+function glue_ports_to_cards(nodesDS, card_nodes) {
+	var updates = [];
+	card_nodes.forEach(function(n) {
+		var pos = nodesDS.get(n.id);
+		if (!pos) return;
+		var dims = n._card_dims || measure_card(n.card || {});
+		Object.keys(dims.ports).forEach(function(pname) {
+			var pid = port_id(n.id, pname);
+			updates.push({
+				id: pid,
+				x: pos.x + dims.ports[pname].x,
+				y: pos.y + dims.ports[pname].y,
+			});
+		});
+	});
+	if (updates.length) nodesDS.update(updates);
+}
+
+function rewire_edges_to_ports(edges, fallback_map) {
+	return edges.map(function(e, i) {
+		var from = e.from;
+		var to = e.to;
+		var from_port = e.from_port || '';
+		var to_port = e.to_port || 'in';
+		if (from_port) {
+			from = port_id(e.from, from_port);
+		}
+		if (to_port) {
+			to = port_id(e.to, to_port);
+		}
+		// If port missing (layout safety), fall back to card ids
+		if (fallback_map && !fallback_map[from]) from = e.from;
+		if (fallback_map && !fallback_map[to]) to = e.to;
+
+		var label = e.label || '';
+		// Hide labels when row/timeout ports carry the meaning
+		if (from_port && (from_port.indexOf('opt_') === 0 || from_port === 'timeout' || from_port.indexOf('action_') === 0 || from_port.indexOf('ring_') === 0 || from_port === 'primary' || from_port === 'alternate')) {
+			label = '';
+		}
+
+		return Object.assign({}, e, {
+			id: e.id || ('e' + i),
+			from: from,
+			to: to,
+			label: label,
+		});
+	});
+}
 
 // Fill remaining viewport height while respecting FusionPBX chrome/padding.
 function size_diagram_container() {
@@ -416,43 +687,52 @@ function render_diagram(data) {
 	var edge_force_direction = (layout_direction === 'LR') ? 'horizontal' : 'vertical';
 
 	var styled_nodes = data.nodes.map(function(n) {
-		var style = node_styles[n.type] || node_styles['external'];
-		var props = Object.assign({}, n, style, {
-			shape: 'box',
-			margin: { top: 8, bottom: 8, left: 10, right: 10 },
-			widthConstraint: { maximum: 160 },
-			font: Object.assign({ size: 13, face: 'Arial', multi: false }, style.font),
-			borderWidth: 2,
-			shadow: { enabled: true, size: 4, x: 2, y: 2, color: 'rgba(0,0,0,0.15)' },
+		var colors = card_style_for(n.type);
+		var dims = measure_card(n.card || {});
+		var props = Object.assign({}, n, {
+			shape: 'custom',
+			ctxRenderer: make_card_ctx_renderer(Object.assign({}, n, { _card_dims: dims })),
+			_card_dims: dims,
+			size: Math.max(dims.width, dims.height) / 2,
+			borderWidth: 0,
+			color: { background: colors.background, border: colors.border },
+			font: { color: colors.font, size: 12, face: 'Arial' },
+			label: undefined,
+			chosen: false,
+			opacity: 1,
+			_muted: false,
 		});
 		return props;
 	});
 
-	var styled_edges = data.edges.map(function(e, i) {
-		return Object.assign({}, e, {
-			id:     e.id || ('e' + i),
+	// Layout pass uses card-to-card edges (ignore ports) so hierarchy stays clean
+	var layout_edges = data.edges.map(function(e, i) {
+		return {
+			id: e.id || ('e' + i),
+			from: e.from,
+			to: e.to,
+			label: '',
 			arrows: { to: { enabled: true, scaleFactor: 0.6, type: 'arrow' } },
-			font:   { size: 11, align: 'middle', color: '#444', strokeWidth: 2, strokeColor: '#fff' },
-			color:  { color: '#555', highlight: '#555', opacity: 0.85 },
-			width:  1.5,
+			color: { color: '#555', highlight: '#555', opacity: 0.85 },
+			width: 1.5,
 			smooth: { type: 'cubicBezier', forceDirection: edge_force_direction, roundness: 0.6 },
-		});
+		};
 	});
 
 	loading_element.style.display = 'flex';
 	if (network) { network.destroy(); network = null; }
 
 	network = new vis.Network(container,
-		{ nodes: new vis.DataSet(styled_nodes), edges: new vis.DataSet(styled_edges) },
+		{ nodes: new vis.DataSet(styled_nodes), edges: new vis.DataSet(layout_edges) },
 		{
 			layout: {
 				hierarchical: {
 					enabled:              true,
 					direction:            layout_direction,
 					sortMethod:           'directed',
-					levelSeparation:      140,
-					nodeSpacing:          30,
-					treeSpacing:          50,
+					levelSeparation:      200,
+					nodeSpacing:          40,
+					treeSpacing:          60,
 					blockShifting:        true,
 					edgeMinimization:     true,
 					parentCentralization: true,
@@ -461,7 +741,7 @@ function render_diagram(data) {
 			physics: {
 				enabled: true,
 				solver: 'hierarchicalRepulsion',
-				hierarchicalRepulsion: { nodeDistance: 80, avoidOverlap: 1, damping: 0.12 },
+				hierarchicalRepulsion: { nodeDistance: 120, avoidOverlap: 1, damping: 0.12 },
 				stabilization: { enabled: true, iterations: 300 },
 			},
 			interaction: { dragNodes: false, zoomView: false, dragView: false },
@@ -475,39 +755,91 @@ function render_diagram(data) {
 
 		var free_nodes = styled_nodes.map(function(n) {
 			var pos = positions[n.id] || { x: 0, y: 0 };
-			return Object.assign({}, n, {
+			var copy = Object.assign({}, n, {
 				x: pos.x,
 				y: pos.y,
 				chosen: false,
 				opacity: 1,
+				_muted: false,
+			});
+			// Recreate ctxRenderer bound to this copy (mute flag lives on node)
+			copy.ctxRenderer = make_card_ctx_renderer(copy);
+			return copy;
+		});
+
+		var port_nodes = build_port_nodes(free_nodes);
+		var port_map = {};
+		port_nodes.forEach(function(p) { port_map[p.id] = true; });
+		free_nodes.forEach(function(n) { port_map[n.id] = true; });
+
+		var wired_edges = rewire_edges_to_ports(data.edges, port_map).map(function(e) {
+			return Object.assign({}, e, {
+				arrows: { to: { enabled: true, scaleFactor: 0.6, type: 'arrow' } },
+				font:   { size: 11, align: 'middle', color: '#444', strokeWidth: 2, strokeColor: '#fff' },
+				color:  { color: '#555', highlight: '#555', opacity: 0.85 },
+				width:  1.5,
+				smooth: { type: 'cubicBezier', forceDirection: edge_force_direction, roundness: 0.55 },
 			});
 		});
 
-		var nodesDS = new vis.DataSet(free_nodes);
-		var edgesDS = new vis.DataSet(styled_edges);
+		var all_nodes = free_nodes.concat(port_nodes);
+		var nodesDS = new vis.DataSet(all_nodes);
+		var edgesDS = new vis.DataSet(wired_edges);
 
 		network = new vis.Network(container,
 			{ nodes: nodesDS, edges: edgesDS },
 			{
 				layout:    { hierarchical: { enabled: false } },
 				physics:   { enabled: false },
-				interaction: { dragNodes: true, zoomView: true, dragView: true, tooltipDelay: 100 },
+				interaction: {
+					dragNodes: true,
+					zoomView: true,
+					dragView: true,
+					tooltipDelay: 100,
+					selectable: true,
+					selectConnectedEdges: false,
+				},
 			}
 		);
+
+		// Keep ports glued while dragging cards
+		network.on('dragging', function(params) {
+			if (!params.nodes || !params.nodes.length) return;
+			var cards = [];
+			params.nodes.forEach(function(id) {
+				if (is_port_id(id)) return;
+				var n = free_nodes.find(function(fn) { return fn.id === id; });
+				if (n) cards.push(n);
+			});
+			if (cards.length) glue_ports_to_cards(nodesDS, cards);
+		});
+		network.on('dragEnd', function(params) {
+			free_nodes.forEach(function(n) {
+				var pos = nodesDS.get(n.id);
+				if (pos) {
+					n.x = pos.x;
+					n.y = pos.y;
+				}
+			});
+			glue_ports_to_cards(nodesDS, free_nodes);
+		});
 
 		var node_map = {};
 		free_nodes.forEach(function(n) { node_map[n.id] = n; });
 
 		var outgoing = {};
 		var incoming = {};
-		styled_edges.forEach(function(e) {
-			if (!outgoing[e.from]) outgoing[e.from] = [];
-			outgoing[e.from].push(e);
-			if (!incoming[e.to]) incoming[e.to] = [];
-			incoming[e.to].push(e);
+		wired_edges.forEach(function(e) {
+			var fromCard = port_parent[e.from] || e.from;
+			var toCard = port_parent[e.to] || e.to;
+			if (!outgoing[fromCard]) outgoing[fromCard] = [];
+			outgoing[fromCard].push({ id: e.id, from: fromCard, to: toCard });
+			if (!incoming[toCard]) incoming[toCard] = [];
+			incoming[toCard].push({ id: e.id, from: fromCard, to: toCard });
 		});
 
 		function connected_subgraph(nodeId) {
+			if (is_port_id(nodeId)) nodeId = port_parent[nodeId] || nodeId;
 			var path_nodes = {};
 			var path_edges = {};
 			path_nodes[nodeId] = true;
@@ -536,29 +868,28 @@ function render_diagram(data) {
 		}
 
 		function apply_selection_highlight(nodeId) {
+			if (is_port_id(nodeId)) nodeId = port_parent[nodeId] || nodeId;
 			var subgraph = connected_subgraph(nodeId);
 
-			nodesDS.update(free_nodes.map(function(n) {
-				if (subgraph.nodes[n.id]) {
-					return {
-						id: n.id,
-						opacity: 1,
-						borderWidth: n.id === nodeId ? 3 : 2,
-						color: n.color,
-						font: n.font,
-					};
-				}
+			var node_updates = free_nodes.map(function(n) {
+				var active = !!subgraph.nodes[n.id];
+				n._muted = !active;
+				n.ctxRenderer = make_card_ctx_renderer(n);
 				return {
 					id: n.id,
-					opacity: 0.22,
-					borderWidth: 1,
-					color: { background: '#E8E8E8', border: '#C0C0C0' },
-					font: Object.assign({}, n.font, { color: '#9E9E9E' }),
+					opacity: 1,
+					ctxRenderer: n.ctxRenderer,
+					_muted: n._muted,
 				};
-			}));
+			});
+			nodesDS.update(node_updates);
+			network.redraw();
 
-			edgesDS.update(styled_edges.map(function(e) {
-				if (subgraph.edges[e.id]) {
+			edgesDS.update(wired_edges.map(function(e) {
+				var fromCard = port_parent[e.from] || e.from;
+				var toCard = port_parent[e.to] || e.to;
+				var active = subgraph.edges[e.id] || (subgraph.nodes[fromCard] && subgraph.nodes[toCard]);
+				if (active) {
 					return {
 						id: e.id,
 						color: { color: '#1565C0', highlight: '#1565C0', opacity: 1 },
@@ -576,16 +907,19 @@ function render_diagram(data) {
 		}
 
 		function clear_selection_highlight() {
-			nodesDS.update(free_nodes.map(function(n) {
+			var node_updates = free_nodes.map(function(n) {
+				n._muted = false;
+				n.ctxRenderer = make_card_ctx_renderer(n);
 				return {
 					id: n.id,
 					opacity: 1,
-					borderWidth: 2,
-					color: n.color,
-					font: n.font,
+					ctxRenderer: n.ctxRenderer,
+					_muted: false,
 				};
-			}));
-			edgesDS.update(styled_edges.map(function(e) {
+			});
+			nodesDS.update(node_updates);
+			network.redraw();
+			edgesDS.update(wired_edges.map(function(e) {
 				return {
 					id: e.id,
 					color: e.color,
@@ -596,16 +930,27 @@ function render_diagram(data) {
 		}
 
 		network.on('select', function(params) {
-			if (params.nodes.length === 0) {
+			var raw = params.nodes || [];
+			var selected = raw.filter(function(id) { return !is_port_id(id); });
+			if (selected.length === 0 && raw.length && is_port_id(raw[0])) {
+				var parent = port_parent[raw[0]];
+				if (parent) {
+					network.selectNodes([parent]);
+					apply_selection_highlight(parent);
+					return;
+				}
+			}
+			if (selected.length === 0) {
 				clear_selection_highlight();
 			} else {
-				apply_selection_highlight(params.nodes[0]);
+				apply_selection_highlight(selected[0]);
 			}
 		});
 
 		network.on('doubleClick', function(params) {
 			if (params.nodes.length === 0) return;
 			var nodeId = params.nodes[0];
+			if (is_port_id(nodeId)) nodeId = port_parent[nodeId] || nodeId;
 			var node   = node_map[nodeId];
 			var url    = (node && node.edit_url) || node_edit_url(nodeId);
 			if (url) window.open(url, '_blank');
