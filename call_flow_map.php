@@ -661,11 +661,11 @@ function build_port_nodes(card_nodes, edges) {
 
 /**
  * Fixed sides: exits always on the right, ingress always on the left.
+ * Fast path: moveNode only (no DataSet churn during drag).
  */
-function glue_ports_to_cards(nodesDS, card_nodes, edges) {
+function glue_ports_to_cards(card_nodes) {
 	if (!network || !card_nodes || !card_nodes.length) return;
 	var positions = network.getPositions();
-	var updates = [];
 
 	card_nodes.forEach(function(n) {
 		var pos = positions[n.id];
@@ -682,149 +682,122 @@ function glue_ports_to_cards(nodesDS, card_nodes, edges) {
 				yOff = 0;
 				side = -1; // left
 			} else {
-				// All egress (row ports, timeout, synthetic out_*) stay on the right
 				var base = dims.ports[pname];
 				yOff = base ? base.y : 0;
-				side = 1;
+				side = 1; // right
 			}
 
-			var x = pos.x + side * halfW;
-			var y = pos.y + yOff;
 			try {
-				network.moveNode(pid, x, y);
+				network.moveNode(pid, pos.x + side * halfW, pos.y + yOff);
 			} catch (err) { /* port may not exist yet */ }
-			updates.push({ id: pid, x: x, y: y });
 		});
 	});
-	if (updates.length) nodesDS.update(updates);
 }
 
-/** When feeder is to the right of its target, loop around so the arrow still enters from the left. */
-var edge_route_routed = {}; // edgeId -> boolean
+/**
+ * Waypoints sit a few px left of the target's left edge so the final segment
+ * always points right into the card. Always present — no per-frame edge rebuilds.
+ */
+var WAYPOINT_GAP = 10;
 
 function is_waypoint_id(id) {
 	return typeof id === 'string' && id.indexOf('wp::') === 0;
 }
 
 function edge_segment_ids(edgeId) {
-	if (edge_route_routed[edgeId]) {
-		return [edgeId + '::a', edgeId + '::b'];
-	}
-	return [edgeId];
+	return [edgeId + '::a', edgeId + '::b'];
 }
 
-function sync_edge_routes(nodesDS, edgesDS, free_nodes, logical_edges) {
-	if (!network || !edgesDS) return;
-	var positions = network.getPositions();
+function waypoint_pos_for_target(tp, toCard, ingressPos) {
+	var halfW = (toCard && toCard._card_dims) ? toCard._card_dims.width / 2 : CARD_LAYOUT.width / 2;
+	return {
+		x: tp.x - halfW - WAYPOINT_GAP,
+		y: ingressPos ? ingressPos.y : tp.y,
+	};
+}
+
+function build_waypoint_nodes(free_nodes, logical_edges) {
 	var card_map = {};
 	free_nodes.forEach(function(n) { card_map[n.id] = n; });
-
-	var margin = 70;
-	var start_route_dx = 30;  // feeder this far right of target → start looping
-	var stop_route_dx = -20;  // feeder left of target again → direct
+	var nodes = [];
 
 	logical_edges.forEach(function(e) {
-		var fp = positions[e._from_card];
-		var tp = positions[e._to_card];
-		if (!fp || !tp) return;
+		var toCard = card_map[e._to_card];
+		if (!toCard) return;
+		var tp = { x: toCard.x || 0, y: toCard.y || 0 };
+		var wp = waypoint_pos_for_target(tp, toCard, null);
+		nodes.push({
+			id: 'wp::' + e.id,
+			x: wp.x,
+			y: wp.y,
+			shape: 'dot',
+			size: 1,
+			color: { background: 'rgba(0,0,0,0)', border: 'rgba(0,0,0,0)' },
+			borderWidth: 0,
+			physics: false,
+			fixed: { x: true, y: true },
+			chosen: false,
+			opacity: 0,
+			_is_port: true,
+			_is_waypoint: true,
+		});
+	});
+	return nodes;
+}
 
-		var dx = fp.x - tp.x;
-		var routed = !!edge_route_routed[e.id];
-		if (routed) {
-			if (dx < stop_route_dx) routed = false;
-		} else {
-			if (dx > start_route_dx) routed = true;
-		}
-		edge_route_routed[e.id] = routed;
-
-		var wpId = 'wp::' + e.id;
-		var segA = e.id + '::a';
-		var segB = e.id + '::b';
+function split_edges_via_waypoints(logical_edges) {
+	var segs = [];
+	logical_edges.forEach(function(e) {
 		var style = {
 			font: e.font,
 			color: e.color,
 			width: e.width,
-			smooth: { type: 'cubicBezier', forceDirection: 'horizontal', roundness: 0.45 },
+			smooth: { type: 'cubicBezier', forceDirection: 'horizontal', roundness: 0.35 },
 			_logical: e.id,
 		};
+		segs.push(Object.assign({}, style, {
+			id: e.id + '::a',
+			from: e.from,
+			to: 'wp::' + e.id,
+			label: e.label || '',
+			arrows: { to: { enabled: false } },
+		}));
+		segs.push(Object.assign({}, style, {
+			id: e.id + '::b',
+			from: 'wp::' + e.id,
+			to: e.to,
+			label: '',
+			arrows: { to: { enabled: true, scaleFactor: 0.7, type: 'arrow' } },
+		}));
+	});
+	return segs;
+}
 
-		if (routed) {
-			var toCard = card_map[e._to_card];
-			var halfW = (toCard && toCard._card_dims) ? toCard._card_dims.width / 2 : CARD_LAYOUT.width / 2;
-			var halfH = (toCard && toCard._card_dims) ? toCard._card_dims.height / 2 : 60;
-			var wx = tp.x - halfW - margin;
-			var wy = (fp.y + tp.y) / 2;
-			// Keep the loop clear of the card when y's are similar
-			if (Math.abs(fp.y - tp.y) < halfH + 20) {
-				wy = tp.y - halfH - 50;
-			}
+function move_waypoints(free_nodes, logical_edges) {
+	if (!network) return;
+	var positions = network.getPositions();
+	var card_map = {};
+	free_nodes.forEach(function(n) { card_map[n.id] = n; });
 
-			if (!nodesDS.get(wpId)) {
-				nodesDS.add({
-					id: wpId,
-					x: wx,
-					y: wy,
-					shape: 'dot',
-					size: 1,
-					color: { background: 'rgba(0,0,0,0)', border: 'rgba(0,0,0,0)' },
-					borderWidth: 0,
-					physics: false,
-					fixed: { x: true, y: true },
-					chosen: false,
-					opacity: 0,
-					_is_port: true,
-					_is_waypoint: true,
-				});
-			} else {
-				try { network.moveNode(wpId, wx, wy); } catch (err) {}
-				nodesDS.update({ id: wpId, x: wx, y: wy });
-			}
-
-			if (edgesDS.get(e.id)) edgesDS.remove(e.id);
-
-			if (!edgesDS.get(segA)) {
-				edgesDS.add(Object.assign({}, style, {
-					id: segA,
-					from: e.from,
-					to: wpId,
-					label: e.label || '',
-					arrows: { to: { enabled: false } },
-				}));
-			} else {
-				edgesDS.update({ id: segA, from: e.from, to: wpId, color: e.color, width: e.width });
-			}
-
-			if (!edgesDS.get(segB)) {
-				edgesDS.add(Object.assign({}, style, {
-					id: segB,
-					from: wpId,
-					to: e.to,
-					label: '',
-					arrows: { to: { enabled: true, scaleFactor: 0.7, type: 'arrow' } },
-				}));
-			} else {
-				edgesDS.update({ id: segB, from: wpId, to: e.to, color: e.color, width: e.width });
-			}
-		} else {
-			if (edgesDS.get(segA)) edgesDS.remove(segA);
-			if (edgesDS.get(segB)) edgesDS.remove(segB);
-			if (nodesDS.get(wpId)) nodesDS.remove(wpId);
-
-			if (!edgesDS.get(e.id)) {
-				edgesDS.add(Object.assign({}, e, {
-					arrows: { to: { enabled: true, scaleFactor: 0.7, type: 'arrow' } },
-					smooth: { type: 'cubicBezier', forceDirection: 'horizontal', roundness: 0.55 },
-				}));
-			} else {
-				edgesDS.update({ id: e.id, from: e.from, to: e.to, color: e.color, width: e.width });
-			}
-		}
+	logical_edges.forEach(function(e) {
+		var tp = positions[e._to_card];
+		var toCard = card_map[e._to_card];
+		if (!tp || !toCard) return;
+		var ingressPos = positions[e.to];
+		var wp = waypoint_pos_for_target(tp, toCard, ingressPos);
+		try {
+			network.moveNode('wp::' + e.id, wp.x, wp.y);
+		} catch (err) { /* ignore */ }
 	});
 }
 
-function refresh_ports_and_routes(nodesDS, edgesDS, free_nodes, logical_edges) {
-	glue_ports_to_cards(nodesDS, free_nodes, logical_edges);
-	sync_edge_routes(nodesDS, edgesDS, free_nodes, logical_edges);
+function refresh_ports_and_routes(free_nodes, logical_edges, dragged_cards) {
+	if (dragged_cards && dragged_cards.length) {
+		glue_ports_to_cards(dragged_cards);
+	} else {
+		glue_ports_to_cards(free_nodes);
+	}
+	move_waypoints(free_nodes, logical_edges);
 }
 
 function rewire_edges_to_ports(edges, fallback_map) {
@@ -1136,10 +1109,12 @@ function render_diagram(data) {
 			});
 		});
 
-		var all_nodes = free_nodes.concat(port_nodes);
+		var waypoint_nodes = build_waypoint_nodes(free_nodes, wired_edges);
+		var split_edges = split_edges_via_waypoints(wired_edges);
+
+		var all_nodes = free_nodes.concat(port_nodes).concat(waypoint_nodes);
 		var nodesDS = new vis.DataSet(all_nodes);
-		var edgesDS = new vis.DataSet(wired_edges);
-		edge_route_routed = {};
+		var edgesDS = new vis.DataSet(split_edges);
 
 		network = new vis.Network(container,
 			{ nodes: nodesDS, edges: edgesDS },
@@ -1157,26 +1132,39 @@ function render_diagram(data) {
 			}
 		);
 
-		// Fixed left-in / right-out ports; loop edges when a card is left of its feeder
-		refresh_ports_and_routes(nodesDS, edgesDS, free_nodes, wired_edges);
+		// Fixed left-in / right-out; tiny waypoints keep final arrows pointing right
+		refresh_ports_and_routes(free_nodes, wired_edges);
 
+		var drag_raf = 0;
 		network.on('dragging', function(params) {
 			if (!params.nodes || !params.nodes.length) return;
-			refresh_ports_and_routes(nodesDS, edgesDS, free_nodes, wired_edges);
+			var dragged = [];
+			params.nodes.forEach(function(id) {
+				if (is_port_id(id) || is_waypoint_id(id)) return;
+				var n = free_nodes.find(function(fn) { return fn.id === id; });
+				if (n) dragged.push(n);
+			});
+			if (!dragged.length) return;
+			if (drag_raf) return;
+			drag_raf = requestAnimationFrame(function() {
+				drag_raf = 0;
+				refresh_ports_and_routes(free_nodes, wired_edges, dragged);
+			});
 		});
 		network.on('dragEnd', function(params) {
+			if (drag_raf) {
+				cancelAnimationFrame(drag_raf);
+				drag_raf = 0;
+			}
 			var positions = network.getPositions();
-			var card_updates = [];
 			free_nodes.forEach(function(n) {
 				var pos = positions[n.id];
 				if (pos) {
 					n.x = pos.x;
 					n.y = pos.y;
-					card_updates.push({ id: n.id, x: pos.x, y: pos.y });
 				}
 			});
-			if (card_updates.length) nodesDS.update(card_updates);
-			refresh_ports_and_routes(nodesDS, edgesDS, free_nodes, wired_edges);
+			refresh_ports_and_routes(free_nodes, wired_edges);
 		});
 
 		network.on('afterDrawing', function(ctx) {
