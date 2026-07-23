@@ -333,6 +333,7 @@ var CARD_LAYOUT = {
 	footerH: 30,
 	radius: 5,
 	portR: 5,
+	eyeSize: 14,
 	titleFont: 'bold 14px Arial',
 	nameFont: '13px Arial',
 	bodyFont: '13px Arial',
@@ -403,6 +404,48 @@ function measure_card(card) {
 	return { width: w, height: h, ports: ports };
 }
 
+function draw_eye_icon(ctx, cx, cy, size, collapsed, color) {
+	ctx.save();
+	ctx.strokeStyle = color;
+	ctx.fillStyle = color;
+	ctx.lineWidth = 1.4;
+	ctx.lineCap = 'round';
+	// Almond outline
+	ctx.beginPath();
+	ctx.moveTo(cx - size * 0.5, cy);
+	ctx.quadraticCurveTo(cx, cy - size * 0.42, cx + size * 0.5, cy);
+	ctx.quadraticCurveTo(cx, cy + size * 0.42, cx - size * 0.5, cy);
+	ctx.closePath();
+	ctx.stroke();
+	// Pupil
+	ctx.beginPath();
+	ctx.arc(cx, cy, size * 0.16, 0, Math.PI * 2);
+	ctx.fill();
+	if (collapsed) {
+		ctx.beginPath();
+		ctx.moveTo(cx - size * 0.52, cy + size * 0.42);
+		ctx.lineTo(cx + size * 0.52, cy - size * 0.42);
+		ctx.stroke();
+	}
+	ctx.restore();
+}
+
+function eye_hit_test(node, canvasPt) {
+	if (!node || !node._has_egress || node._path_hidden || !node._eye_hit) return false;
+	var hit = node._eye_hit;
+	var nx = node.x || 0;
+	var ny = node.y || 0;
+	if (network) {
+		try {
+			var pos = network.getPositions([node.id])[node.id];
+			if (pos) { nx = pos.x; ny = pos.y; }
+		} catch (err) { /* ignore */ }
+	}
+	var lx = canvasPt.x - nx;
+	var ly = canvasPt.y - ny;
+	return lx >= hit.l && lx <= hit.r && ly >= hit.t && ly <= hit.b;
+}
+
 function make_card_ctx_renderer(node) {
 	var card = node.card || { title: node.type || 'App', icon: '', name: node.label || '', body: [] };
 	var colors = card_style_for(node.type);
@@ -421,6 +464,8 @@ function make_card_ctx_renderer(node) {
 		var left = x - w / 2;
 		var top = y - h / 2;
 		var muted = node._muted === true;
+		var showEye = node._has_egress === true && node._path_hidden !== true;
+		var eyeReserve = showEye ? (L.eyeSize + 10) : 0;
 
 		function round_rect(rx, ry, rw, rh, r) {
 			ctx.beginPath();
@@ -517,15 +562,31 @@ function make_card_ctx_renderer(node) {
 				ctx.lineWidth = selected ? 3 : 2;
 				ctx.stroke();
 
-				// Titlebar text
+				// Titlebar text (leave room for eye on the right)
 				ctx.fillStyle = textColor;
 				ctx.textBaseline = 'middle';
 				ctx.font = L.titleFont;
 				var titleText = ((card.icon ? card.icon + ' ' : '') + (card.title || '')).trim();
-				ctx.fillText(titleText, left + L.padX, top + L.titleH / 2, w - L.padX * 2);
+				ctx.fillText(titleText, left + L.padX, top + L.titleH / 2, w - L.padX * 2 - eyeReserve);
 
 				ctx.font = L.nameFont;
-				ctx.fillText(card.name || '', left + L.padX, top + L.titleH + L.nameH / 2, w - L.padX * 2);
+				ctx.fillText(card.name || '', left + L.padX, top + L.titleH + L.nameH / 2, w - L.padX * 2 - eyeReserve);
+
+				// Eye toggle — just inside top-right of the card
+				if (showEye) {
+					var eyeCx = left + w - L.padX - L.eyeSize / 2;
+					var eyeCy = top + L.titleH / 2;
+					var half = L.eyeSize / 2 + 3;
+					node._eye_hit = {
+						l: (eyeCx - half) - x,
+						r: (eyeCx + half) - x,
+						t: (eyeCy - half) - y,
+						b: (eyeCy + half) - y,
+					};
+					draw_eye_icon(ctx, eyeCx, eyeCy, L.eyeSize, node._collapsed === true, textColor);
+				} else {
+					node._eye_hit = null;
+				}
 
 				ctx.restore();
 			},
@@ -840,7 +901,7 @@ function draw_port_connectors(ctx, free_nodes, edges) {
 	var positions = network.getPositions();
 	var L = CARD_LAYOUT;
 	free_nodes.forEach(function(n) {
-		if (n._muted) return;
+		if (n._muted || n._path_hidden) return;
 		var colors = card_style_for(n.type);
 		(card_ports[n.id] || []).forEach(function(pid) {
 			if (!used[pid]) return;
@@ -1177,13 +1238,85 @@ function render_diagram(data) {
 		var outgoing = {};
 		var incoming = {};
 		wired_edges.forEach(function(e) {
-			var fromCard = port_parent[e.from] || e.from;
-			var toCard = port_parent[e.to] || e.to;
+			var fromCard = e._from_card || port_parent[e.from] || e.from;
+			var toCard = e._to_card || port_parent[e.to] || e.to;
 			if (!outgoing[fromCard]) outgoing[fromCard] = [];
 			outgoing[fromCard].push({ id: e.id, from: fromCard, to: toCard });
 			if (!incoming[toCard]) incoming[toCard] = [];
 			incoming[toCard].push({ id: e.id, from: fromCard, to: toCard });
 		});
+
+		var path_hidden_edges = {};
+
+		function exclusively_ingressed_by(childId, parentId) {
+			var inns = incoming[childId] || [];
+			if (!inns.length) return false;
+			for (var i = 0; i < inns.length; i++) {
+				if (inns[i].from !== parentId) return false;
+			}
+			return true;
+		}
+
+		function collect_path_hide_from(rootId, hiddenNodes, hiddenEdges) {
+			(outgoing[rootId] || []).forEach(function(e) {
+				hiddenEdges[e.id] = true;
+				var child = e.to;
+				if (exclusively_ingressed_by(child, rootId)) {
+					if (!hiddenNodes[child]) {
+						hiddenNodes[child] = true;
+						collect_path_hide_from(child, hiddenNodes, hiddenEdges);
+					}
+				}
+			});
+		}
+
+		function apply_path_visibility() {
+			var hiddenNodes = {};
+			var hiddenEdges = {};
+			free_nodes.forEach(function(n) {
+				n._has_egress = (outgoing[n.id] || []).length > 0;
+				if (n._collapsed && n._has_egress) {
+					collect_path_hide_from(n.id, hiddenNodes, hiddenEdges);
+				}
+			});
+			path_hidden_edges = hiddenEdges;
+
+			var node_updates = [];
+			free_nodes.forEach(function(n) {
+				n._path_hidden = !!hiddenNodes[n.id];
+				n.ctxRenderer = make_card_ctx_renderer(n);
+				node_updates.push({
+					id: n.id,
+					hidden: n._path_hidden,
+					ctxRenderer: n.ctxRenderer,
+					_collapsed: !!n._collapsed,
+					_path_hidden: n._path_hidden,
+					_has_egress: n._has_egress,
+				});
+				(card_ports[n.id] || []).forEach(function(pid) {
+					node_updates.push({ id: pid, hidden: n._path_hidden });
+				});
+			});
+
+			var edge_updates = [];
+			wired_edges.forEach(function(e) {
+				var hide = !!hiddenEdges[e.id];
+				e._path_hidden = hide;
+				edge_segment_ids(e.id).forEach(function(sid) {
+					if (!edgesDS.get(sid)) return;
+					edge_updates.push({ id: sid, hidden: hide });
+				});
+				if (nodesDS.get('wp::' + e.id)) {
+					node_updates.push({ id: 'wp::' + e.id, hidden: hide });
+				}
+			});
+			if (node_updates.length) nodesDS.update(node_updates);
+			if (edge_updates.length) edgesDS.update(edge_updates);
+			network.redraw();
+		}
+
+		// Initial eye affordances on cards that have egress
+		apply_path_visibility();
 
 		function connected_subgraph(nodeId) {
 			if (is_port_id(nodeId)) nodeId = port_parent[nodeId] || nodeId;
@@ -1225,6 +1358,7 @@ function render_diagram(data) {
 				return {
 					id: n.id,
 					opacity: 1,
+					hidden: !!n._path_hidden,
 					ctxRenderer: n.ctxRenderer,
 					_muted: n._muted,
 				};
@@ -1239,9 +1373,14 @@ function render_diagram(data) {
 				var active = subgraph.edges[e.id] || (subgraph.nodes[fromCard] && subgraph.nodes[toCard]);
 				edge_segment_ids(e.id).forEach(function(sid) {
 					if (!edgesDS.get(sid)) return;
+					if (e._path_hidden || path_hidden_edges[e.id]) {
+						edge_updates.push({ id: sid, hidden: true });
+						return;
+					}
 					if (active) {
 						edge_updates.push({
 							id: sid,
+							hidden: false,
 							color: { color: '#1565C0', highlight: '#1565C0', opacity: 1 },
 							width: 2.5,
 							font: Object.assign({}, e.font, { color: '#1565C0' }),
@@ -1249,6 +1388,7 @@ function render_diagram(data) {
 					} else {
 						edge_updates.push({
 							id: sid,
+							hidden: false,
 							color: { color: '#CFCFCF', highlight: '#CFCFCF', opacity: 0.25 },
 							width: 1,
 							font: Object.assign({}, e.font, { color: '#BDBDBD' }),
@@ -1266,6 +1406,7 @@ function render_diagram(data) {
 				return {
 					id: n.id,
 					opacity: 1,
+					hidden: !!n._path_hidden,
 					ctxRenderer: n.ctxRenderer,
 					_muted: false,
 				};
@@ -1276,8 +1417,13 @@ function render_diagram(data) {
 			wired_edges.forEach(function(e) {
 				edge_segment_ids(e.id).forEach(function(sid) {
 					if (!edgesDS.get(sid)) return;
+					if (e._path_hidden || path_hidden_edges[e.id]) {
+						edge_updates.push({ id: sid, hidden: true });
+						return;
+					}
 					edge_updates.push({
 						id: sid,
+						hidden: false,
 						color: e.color,
 						width: e.width,
 						font: e.font,
@@ -1287,7 +1433,29 @@ function render_diagram(data) {
 			if (edge_updates.length) edgesDS.update(edge_updates);
 		}
 
+		var suppress_select = false;
+		network.on('click', function(params) {
+			var pt = params.pointer && params.pointer.canvas;
+			if (!pt) return;
+			for (var i = 0; i < free_nodes.length; i++) {
+				var n = free_nodes[i];
+				if (eye_hit_test(n, pt)) {
+					suppress_select = true;
+					n._collapsed = !n._collapsed;
+					apply_path_visibility();
+					network.unselectAll();
+					clear_selection_highlight();
+					return;
+				}
+			}
+		});
+
 		network.on('select', function(params) {
+			if (suppress_select) {
+				suppress_select = false;
+				network.unselectAll();
+				return;
+			}
 			var raw = (params.nodes || []).filter(function(id) {
 				return !is_waypoint_id(id);
 			});
