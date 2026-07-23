@@ -438,10 +438,16 @@ class call_flow_map {
 		$name     = $row['ring_group_name'] ?? 'Ring Group';
 		$ext      = !empty($row['ring_group_extension']) ? ' (' . $row['ring_group_extension'] . ')' : '';
 		$strategy = !empty($row['ring_group_strategy']) ? ucfirst($row['ring_group_strategy']) : '';
+		// ring_group_call_timeout is stored in seconds
+		$ring_secs = (int) ($row['ring_group_call_timeout'] ?? 0);
 
 		$body = [];
-		if ($strategy !== '') {
-			$body[] = ['type' => 'text', 'text' => $strategy];
+		$strategy_line = $strategy;
+		if ($ring_secs > 0) {
+			$strategy_line = ($strategy_line !== '' ? $strategy_line . ' · ' : '') . $ring_secs . ' secs';
+		}
+		if ($strategy_line !== '') {
+			$body[] = ['type' => 'text', 'text' => $strategy_line];
 		}
 		foreach ($inline_lines as $line) {
 			$body[] = ['type' => 'item', 'text' => $line];
@@ -567,10 +573,16 @@ class call_flow_map {
 		$name     = $row['queue_name'] ?? 'Queue';
 		$ext      = !empty($row['queue_extension']) ? ' (' . $row['queue_extension'] . ')' : '';
 		$strategy = !empty($row['queue_strategy']) ? ucfirst(str_replace('-', ' ', $row['queue_strategy'])) : '';
+		// queue_max_wait_time is stored in seconds (0 = unlimited)
+		$wait_secs = (int) ($row['queue_max_wait_time'] ?? 0);
 
 		$body = [];
-		if ($strategy !== '') {
-			$body[] = ['type' => 'text', 'text' => $strategy];
+		$strategy_line = $strategy;
+		if ($wait_secs > 0) {
+			$strategy_line = ($strategy_line !== '' ? $strategy_line . ' · ' : '') . $wait_secs . ' secs';
+		}
+		if ($strategy_line !== '') {
+			$body[] = ['type' => 'text', 'text' => $strategy_line];
 		}
 		if (!empty($agents)) {
 			foreach ($agents as $a) {
@@ -1236,9 +1248,9 @@ class call_flow_map {
 			return;
 		}
 
-		// Company directory (*411)
+		// Company directory (*411) — one shared card for all inbound edges
 		if ($ext === '*411') {
-			$n_id = 'dir_' . ($this->node_counter++);
+			$n_id = 'dir_*411';
 			$this->add_node($n_id, "📋 Company\nDirectory", 'external', '', [
 				'card' => $this->make_card('External', '📋', 'Company Directory'),
 			], $depth);
@@ -1506,12 +1518,17 @@ class call_flow_map {
 	}
 
 	/**
-	 * IVR timeout is stored in milliseconds in FusionPBX; show seconds.
+	 * IVR timeout is always stored in milliseconds in FusionPBX; show seconds.
 	 */
-	private function ivr_timeout_secs($raw): int {
-		$n = (int) $raw;
-		if ($n <= 0) return 0;
-		return $n >= 100 ? (int) round($n / 1000) : $n;
+	private function ivr_timeout_secs($raw): float|int {
+		$ms = (float) $raw;
+		if ($ms <= 0) return 0;
+		$secs = $ms / 1000;
+		// Prefer a whole number when exact (e.g. 3000 → 3)
+		if (abs($secs - round($secs)) < 0.001) {
+			return (int) round($secs);
+		}
+		return round($secs, 1);
 	}
 
 	/**
