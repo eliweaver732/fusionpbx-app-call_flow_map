@@ -546,18 +546,23 @@ function build_port_nodes(card_nodes) {
 }
 
 function glue_ports_to_cards(nodesDS, card_nodes) {
+	if (!network || !card_nodes || !card_nodes.length) return;
+	var ids = card_nodes.map(function(n) { return n.id; });
+	// Live positions during drag (DataSet x/y stay stale until dragEnd)
+	var positions = network.getPositions(ids);
 	var updates = [];
 	card_nodes.forEach(function(n) {
-		var pos = nodesDS.get(n.id);
+		var pos = positions[n.id];
 		if (!pos) return;
 		var dims = n._card_dims || measure_card(n.card || {});
 		Object.keys(dims.ports).forEach(function(pname) {
 			var pid = port_id(n.id, pname);
-			updates.push({
-				id: pid,
-				x: pos.x + dims.ports[pname].x,
-				y: pos.y + dims.ports[pname].y,
-			});
+			var x = pos.x + dims.ports[pname].x;
+			var y = pos.y + dims.ports[pname].y;
+			try {
+				network.moveNode(pid, x, y);
+			} catch (err) { /* port may not exist yet */ }
+			updates.push({ id: pid, x: x, y: y });
 		});
 	});
 	if (updates.length) nodesDS.update(updates);
@@ -814,13 +819,17 @@ function render_diagram(data) {
 			if (cards.length) glue_ports_to_cards(nodesDS, cards);
 		});
 		network.on('dragEnd', function(params) {
+			var positions = network.getPositions();
+			var card_updates = [];
 			free_nodes.forEach(function(n) {
-				var pos = nodesDS.get(n.id);
+				var pos = positions[n.id];
 				if (pos) {
 					n.x = pos.x;
 					n.y = pos.y;
+					card_updates.push({ id: n.id, x: pos.x, y: pos.y });
 				}
 			});
+			if (card_updates.length) nodesDS.update(card_updates);
 			glue_ports_to_cards(nodesDS, free_nodes);
 		});
 
