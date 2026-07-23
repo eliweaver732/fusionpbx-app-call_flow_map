@@ -359,7 +359,7 @@ function measure_card(card) {
 	var L = CARD_LAYOUT;
 	var w = L.width;
 	var h = L.titleH + L.nameH + L.padTop;
-	// x is half-width magnitude; glue_ports applies left/right sign from neighbor positions
+	// x is half-width magnitude; glue_ports places ingress on left (-), egress on right (+)
 	var ports = { in: { x: w / 2, y: 0 } };
 
 	var cursor = L.titleH + L.nameH + L.padTop;
@@ -556,6 +556,17 @@ function is_ingress_port(pname) {
 	return pname === 'in' || pname.indexOf('in_') === 0;
 }
 
+function is_egress_port(pname) {
+	return !is_ingress_port(pname);
+}
+
+function find_card(card_nodes, cardId) {
+	for (var ci = 0; ci < card_nodes.length; ci++) {
+		if (card_nodes[ci].id === cardId) return card_nodes[ci];
+	}
+	return null;
+}
+
 function make_invisible_port(pid, parentId, pname, x, y) {
 	return {
 		id: pid,
@@ -593,56 +604,69 @@ function build_port_nodes(card_nodes, edges) {
 			port_parent[pid] = n.id;
 			ports.push(make_invisible_port(
 				pid, n.id, pname,
-				(n.x || 0) + dims.ports[pname].x,
-				(n.y || 0) + dims.ports[pname].y
+				(n.x || 0) + dims.width / 2, // always right
+				(n.y || 0) + (dims.ports[pname].y || 0)
 			));
 		});
 	});
 
-	// Unique ingress port per edge so each arrow can attach to the facing side
+	// Per-edge ingress (left) and default egress (right) when no row port was set
 	(edges || []).forEach(function(e, ei) {
 		var eid = e.id || ('e' + ei);
-		var toCard = e._to_card || e.to;
-		var pname = 'in_' + eid;
-		var pid = port_id(toCard, pname);
-		if (port_parent[pid]) return;
-		var card = null;
-		for (var ci = 0; ci < card_nodes.length; ci++) {
-			if (card_nodes[ci].id === toCard) { card = card_nodes[ci]; break; }
+		var fromCardId = e._from_card || e.from;
+		var toCardId = e._to_card || e.to;
+
+		// Ingress on target — always left-center
+		var inName = 'in_' + eid;
+		var inPid = port_id(toCardId, inName);
+		if (!port_parent[inPid]) {
+			var toCard = find_card(card_nodes, toCardId);
+			if (toCard) {
+				var toDims = toCard._card_dims || measure_card(toCard.card || {});
+				card_ports[toCardId] = card_ports[toCardId] || [];
+				card_ports[toCardId].push(inPid);
+				port_parent[inPid] = toCardId;
+				ports.push(make_invisible_port(
+					inPid, toCardId, inName,
+					(toCard.x || 0) - toDims.width / 2,
+					(toCard.y || 0)
+				));
+			}
 		}
-		if (!card) return;
-		var dims = card._card_dims || measure_card(card.card || {});
-		card_ports[toCard] = card_ports[toCard] || [];
-		card_ports[toCard].push(pid);
-		port_parent[pid] = toCard;
-		ports.push(make_invisible_port(
-			pid, toCard, pname,
-			(card.x || 0) - dims.width / 2,
-			(card.y || 0)
-		));
+
+		// Default egress on source when edge has no explicit from_port — always right-center
+		var has_from_port = !!(e.from_port);
+		if (!has_from_port) {
+			var outName = 'out_' + eid;
+			var outPid = port_id(fromCardId, outName);
+			if (!port_parent[outPid]) {
+				var fromCard = find_card(card_nodes, fromCardId);
+				if (fromCard) {
+					var fromDims = fromCard._card_dims || measure_card(fromCard.card || {});
+					card_ports[fromCardId] = card_ports[fromCardId] || [];
+					card_ports[fromCardId].push(outPid);
+					port_parent[outPid] = fromCardId;
+					ports.push(make_invisible_port(
+						outPid, fromCardId, outName,
+						(fromCard.x || 0) + fromDims.width / 2,
+						(fromCard.y || 0)
+					));
+				}
+			}
+		}
 	});
 
 	return ports;
 }
 
 /**
- * Place ports on the side facing the connected card so edges never cross through a node.
- * Exit ports face their child; ingress ports face their parent.
+ * Fixed sides: exits always on the right, ingress always on the left.
  */
 function glue_ports_to_cards(nodesDS, card_nodes, edges) {
 	if (!network || !card_nodes || !card_nodes.length) return;
 	var positions = network.getPositions();
-	var exit_target = {};
-	var in_source = {};
-
-	(edges || []).forEach(function(e) {
-		var fromCard = is_port_id(e.from) ? port_parent[e.from] : e.from;
-		var toCard = is_port_id(e.to) ? port_parent[e.to] : e.to;
-		if (is_port_id(e.from)) exit_target[e.from] = toCard;
-		if (is_port_id(e.to)) in_source[e.to] = fromCard;
-	});
-
 	var updates = [];
+
 	card_nodes.forEach(function(n) {
 		var pos = positions[n.id];
 		if (!pos) return;
@@ -652,21 +676,16 @@ function glue_ports_to_cards(nodesDS, card_nodes, edges) {
 		(card_ports[n.id] || []).forEach(function(pid) {
 			var pname = port_name_from_id(pid);
 			var yOff = 0;
-			var side = 1; // default right
+			var side;
 
 			if (is_ingress_port(pname)) {
 				yOff = 0;
-				var src = in_source[pid];
-				var srcPos = src ? positions[src] : null;
-				// Parent on our left → enter on left; parent on our right → enter on right
-				side = (srcPos && srcPos.x > pos.x) ? 1 : -1;
+				side = -1; // left
 			} else {
+				// All egress (row ports, timeout, synthetic out_*) stay on the right
 				var base = dims.ports[pname];
 				yOff = base ? base.y : 0;
-				var tgt = exit_target[pid];
-				var tgtPos = tgt ? positions[tgt] : null;
-				// Child on our right → exit on right; child on our left → exit on left
-				side = (tgtPos && tgtPos.x < pos.x) ? -1 : 1;
+				side = 1;
 			}
 
 			var x = pos.x + side * halfW;
@@ -680,17 +699,144 @@ function glue_ports_to_cards(nodesDS, card_nodes, edges) {
 	if (updates.length) nodesDS.update(updates);
 }
 
+/** When feeder is to the right of its target, loop around so the arrow still enters from the left. */
+var edge_route_routed = {}; // edgeId -> boolean
+
+function is_waypoint_id(id) {
+	return typeof id === 'string' && id.indexOf('wp::') === 0;
+}
+
+function edge_segment_ids(edgeId) {
+	if (edge_route_routed[edgeId]) {
+		return [edgeId + '::a', edgeId + '::b'];
+	}
+	return [edgeId];
+}
+
+function sync_edge_routes(nodesDS, edgesDS, free_nodes, logical_edges) {
+	if (!network || !edgesDS) return;
+	var positions = network.getPositions();
+	var card_map = {};
+	free_nodes.forEach(function(n) { card_map[n.id] = n; });
+
+	var margin = 70;
+	var start_route_dx = 30;  // feeder this far right of target → start looping
+	var stop_route_dx = -20;  // feeder left of target again → direct
+
+	logical_edges.forEach(function(e) {
+		var fp = positions[e._from_card];
+		var tp = positions[e._to_card];
+		if (!fp || !tp) return;
+
+		var dx = fp.x - tp.x;
+		var routed = !!edge_route_routed[e.id];
+		if (routed) {
+			if (dx < stop_route_dx) routed = false;
+		} else {
+			if (dx > start_route_dx) routed = true;
+		}
+		edge_route_routed[e.id] = routed;
+
+		var wpId = 'wp::' + e.id;
+		var segA = e.id + '::a';
+		var segB = e.id + '::b';
+		var style = {
+			font: e.font,
+			color: e.color,
+			width: e.width,
+			smooth: { type: 'cubicBezier', forceDirection: 'horizontal', roundness: 0.45 },
+			_logical: e.id,
+		};
+
+		if (routed) {
+			var toCard = card_map[e._to_card];
+			var halfW = (toCard && toCard._card_dims) ? toCard._card_dims.width / 2 : CARD_LAYOUT.width / 2;
+			var halfH = (toCard && toCard._card_dims) ? toCard._card_dims.height / 2 : 60;
+			var wx = tp.x - halfW - margin;
+			var wy = (fp.y + tp.y) / 2;
+			// Keep the loop clear of the card when y's are similar
+			if (Math.abs(fp.y - tp.y) < halfH + 20) {
+				wy = tp.y - halfH - 50;
+			}
+
+			if (!nodesDS.get(wpId)) {
+				nodesDS.add({
+					id: wpId,
+					x: wx,
+					y: wy,
+					shape: 'dot',
+					size: 1,
+					color: { background: 'rgba(0,0,0,0)', border: 'rgba(0,0,0,0)' },
+					borderWidth: 0,
+					physics: false,
+					fixed: { x: true, y: true },
+					chosen: false,
+					opacity: 0,
+					_is_port: true,
+					_is_waypoint: true,
+				});
+			} else {
+				try { network.moveNode(wpId, wx, wy); } catch (err) {}
+				nodesDS.update({ id: wpId, x: wx, y: wy });
+			}
+
+			if (edgesDS.get(e.id)) edgesDS.remove(e.id);
+
+			if (!edgesDS.get(segA)) {
+				edgesDS.add(Object.assign({}, style, {
+					id: segA,
+					from: e.from,
+					to: wpId,
+					label: e.label || '',
+					arrows: { to: { enabled: false } },
+				}));
+			} else {
+				edgesDS.update({ id: segA, from: e.from, to: wpId, color: e.color, width: e.width });
+			}
+
+			if (!edgesDS.get(segB)) {
+				edgesDS.add(Object.assign({}, style, {
+					id: segB,
+					from: wpId,
+					to: e.to,
+					label: '',
+					arrows: { to: { enabled: true, scaleFactor: 0.7, type: 'arrow' } },
+				}));
+			} else {
+				edgesDS.update({ id: segB, from: wpId, to: e.to, color: e.color, width: e.width });
+			}
+		} else {
+			if (edgesDS.get(segA)) edgesDS.remove(segA);
+			if (edgesDS.get(segB)) edgesDS.remove(segB);
+			if (nodesDS.get(wpId)) nodesDS.remove(wpId);
+
+			if (!edgesDS.get(e.id)) {
+				edgesDS.add(Object.assign({}, e, {
+					arrows: { to: { enabled: true, scaleFactor: 0.7, type: 'arrow' } },
+					smooth: { type: 'cubicBezier', forceDirection: 'horizontal', roundness: 0.55 },
+				}));
+			} else {
+				edgesDS.update({ id: e.id, from: e.from, to: e.to, color: e.color, width: e.width });
+			}
+		}
+	});
+}
+
+function refresh_ports_and_routes(nodesDS, edgesDS, free_nodes, logical_edges) {
+	glue_ports_to_cards(nodesDS, free_nodes, logical_edges);
+	sync_edge_routes(nodesDS, edgesDS, free_nodes, logical_edges);
+}
+
 function rewire_edges_to_ports(edges, fallback_map) {
 	return edges.map(function(e, i) {
 		var eid = e.id || ('e' + i);
-		var from = e.from;
-		var to = e.to;
 		var from_port = e.from_port || '';
-		if (from_port) {
-			from = port_id(e.from, from_port);
-		}
-		// Per-edge ingress on the target card
-		to = port_id(e.to, 'in_' + eid);
+		// Always leave via a right-side egress port
+		var from = from_port
+			? port_id(e.from, from_port)
+			: port_id(e.from, 'out_' + eid);
+		// Always enter via a left-side ingress port
+		var to = port_id(e.to, 'in_' + eid);
 
 		if (fallback_map && !fallback_map[from]) from = e.from;
 		if (fallback_map && !fallback_map[to]) to = e.to;
@@ -993,6 +1139,7 @@ function render_diagram(data) {
 		var all_nodes = free_nodes.concat(port_nodes);
 		var nodesDS = new vis.DataSet(all_nodes);
 		var edgesDS = new vis.DataSet(wired_edges);
+		edge_route_routed = {};
 
 		network = new vis.Network(container,
 			{ nodes: nodesDS, edges: edgesDS },
@@ -1010,13 +1157,12 @@ function render_diagram(data) {
 			}
 		);
 
-		// Initial side-aware port placement
-		glue_ports_to_cards(nodesDS, free_nodes, wired_edges);
+		// Fixed left-in / right-out ports; loop edges when a card is left of its feeder
+		refresh_ports_and_routes(nodesDS, edgesDS, free_nodes, wired_edges);
 
-		// Keep ports glued + flipped to the facing side while dragging
 		network.on('dragging', function(params) {
 			if (!params.nodes || !params.nodes.length) return;
-			glue_ports_to_cards(nodesDS, free_nodes, wired_edges);
+			refresh_ports_and_routes(nodesDS, edgesDS, free_nodes, wired_edges);
 		});
 		network.on('dragEnd', function(params) {
 			var positions = network.getPositions();
@@ -1030,7 +1176,7 @@ function render_diagram(data) {
 				}
 			});
 			if (card_updates.length) nodesDS.update(card_updates);
-			glue_ports_to_cards(nodesDS, free_nodes, wired_edges);
+			refresh_ports_and_routes(nodesDS, edgesDS, free_nodes, wired_edges);
 		});
 
 		network.on('afterDrawing', function(ctx) {
@@ -1081,7 +1227,7 @@ function render_diagram(data) {
 		}
 
 		function apply_selection_highlight(nodeId) {
-			if (is_port_id(nodeId)) nodeId = port_parent[nodeId] || nodeId;
+			if (is_port_id(nodeId) || is_waypoint_id(nodeId)) nodeId = port_parent[nodeId] || nodeId;
 			var subgraph = connected_subgraph(nodeId);
 
 			var node_updates = free_nodes.map(function(n) {
@@ -1098,25 +1244,31 @@ function render_diagram(data) {
 			nodesDS.update(node_updates);
 			network.redraw();
 
-			edgesDS.update(wired_edges.map(function(e) {
-				var fromCard = port_parent[e.from] || e.from;
-				var toCard = port_parent[e.to] || e.to;
+			var edge_updates = [];
+			wired_edges.forEach(function(e) {
+				var fromCard = e._from_card || port_parent[e.from] || e.from;
+				var toCard = e._to_card || port_parent[e.to] || e.to;
 				var active = subgraph.edges[e.id] || (subgraph.nodes[fromCard] && subgraph.nodes[toCard]);
-				if (active) {
-					return {
-						id: e.id,
-						color: { color: '#1565C0', highlight: '#1565C0', opacity: 1 },
-						width: 2.5,
-						font: Object.assign({}, e.font, { color: '#1565C0' }),
-					};
-				}
-				return {
-					id: e.id,
-					color: { color: '#CFCFCF', highlight: '#CFCFCF', opacity: 0.25 },
-					width: 1,
-					font: Object.assign({}, e.font, { color: '#BDBDBD' }),
-				};
-			}));
+				edge_segment_ids(e.id).forEach(function(sid) {
+					if (!edgesDS.get(sid)) return;
+					if (active) {
+						edge_updates.push({
+							id: sid,
+							color: { color: '#1565C0', highlight: '#1565C0', opacity: 1 },
+							width: 2.5,
+							font: Object.assign({}, e.font, { color: '#1565C0' }),
+						});
+					} else {
+						edge_updates.push({
+							id: sid,
+							color: { color: '#CFCFCF', highlight: '#CFCFCF', opacity: 0.25 },
+							width: 1,
+							font: Object.assign({}, e.font, { color: '#BDBDBD' }),
+						});
+					}
+				});
+			});
+			if (edge_updates.length) edgesDS.update(edge_updates);
 		}
 
 		function clear_selection_highlight() {
@@ -1132,18 +1284,25 @@ function render_diagram(data) {
 			});
 			nodesDS.update(node_updates);
 			network.redraw();
-			edgesDS.update(wired_edges.map(function(e) {
-				return {
-					id: e.id,
-					color: e.color,
-					width: e.width,
-					font: e.font,
-				};
-			}));
+			var edge_updates = [];
+			wired_edges.forEach(function(e) {
+				edge_segment_ids(e.id).forEach(function(sid) {
+					if (!edgesDS.get(sid)) return;
+					edge_updates.push({
+						id: sid,
+						color: e.color,
+						width: e.width,
+						font: e.font,
+					});
+				});
+			});
+			if (edge_updates.length) edgesDS.update(edge_updates);
 		}
 
 		network.on('select', function(params) {
-			var raw = params.nodes || [];
+			var raw = (params.nodes || []).filter(function(id) {
+				return !is_waypoint_id(id);
+			});
 			var selected = raw.filter(function(id) { return !is_port_id(id); });
 			if (selected.length === 0 && raw.length && is_port_id(raw[0])) {
 				var parent = port_parent[raw[0]];
@@ -1163,6 +1322,7 @@ function render_diagram(data) {
 		network.on('doubleClick', function(params) {
 			if (params.nodes.length === 0) return;
 			var nodeId = params.nodes[0];
+			if (is_waypoint_id(nodeId)) return;
 			if (is_port_id(nodeId)) nodeId = port_parent[nodeId] || nodeId;
 			var node   = node_map[nodeId];
 			var url    = (node && node.edit_url) || node_edit_url(nodeId);
