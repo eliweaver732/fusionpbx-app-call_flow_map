@@ -334,6 +334,7 @@ var CARD_LAYOUT = {
 	radius: 5,
 	portR: 5,
 	eyeSize: 12,
+	editSize: 12,
 	titleFont: 'bold 14px Arial',
 	nameFont: '13px Arial',
 	bodyFont: '13px Arial',
@@ -430,6 +431,37 @@ function draw_eye_icon(ctx, cx, cy, size, collapsed, color) {
 	ctx.restore();
 }
 
+function draw_edit_icon(ctx, cx, cy, size, color) {
+	ctx.save();
+	ctx.strokeStyle = color;
+	ctx.fillStyle = color;
+	ctx.lineWidth = 1.4;
+	ctx.lineCap = 'round';
+	ctx.lineJoin = 'round';
+	var s = size * 0.42;
+	// Pencil body (diagonal)
+	ctx.beginPath();
+	ctx.moveTo(cx - s, cy + s * 0.35);
+	ctx.lineTo(cx + s * 0.25, cy - s * 0.9);
+	ctx.lineTo(cx + s * 0.55, cy - s * 0.6);
+	ctx.lineTo(cx - s * 0.7, cy + s * 0.65);
+	ctx.closePath();
+	ctx.stroke();
+	// Tip
+	ctx.beginPath();
+	ctx.moveTo(cx - s, cy + s * 0.35);
+	ctx.lineTo(cx - s * 0.7, cy + s * 0.65);
+	ctx.lineTo(cx - s * 1.05, cy + s * 0.85);
+	ctx.closePath();
+	ctx.stroke();
+	// Cap line
+	ctx.beginPath();
+	ctx.moveTo(cx + s * 0.05, cy - s * 0.7);
+	ctx.lineTo(cx + s * 0.35, cy - s * 0.4);
+	ctx.stroke();
+	ctx.restore();
+}
+
 function node_canvas_pos(node) {
 	var nx = node.x || 0;
 	var ny = node.y || 0;
@@ -440,6 +472,14 @@ function node_canvas_pos(node) {
 		} catch (err) { /* ignore */ }
 	}
 	return { x: nx, y: ny };
+}
+
+function hit_box_test(hit, node, canvasPt) {
+	if (!hit) return false;
+	var pos = node_canvas_pos(node);
+	var lx = canvasPt.x - pos.x;
+	var ly = canvasPt.y - pos.y;
+	return lx >= hit.l && lx <= hit.r && ly >= hit.t && ly <= hit.b;
 }
 
 /** @returns {string|null} egress port name if the eye was hit */
@@ -455,6 +495,16 @@ function eye_hit_test(node, canvasPt) {
 		}
 	}
 	return null;
+}
+
+function edit_hit_test(node, canvasPt) {
+	if (!node || node._path_hidden || !node._edit_hit || !node._can_edit) return false;
+	return hit_box_test(node._edit_hit, node, canvasPt);
+}
+
+function resolve_edit_url(node) {
+	if (!node) return null;
+	return node.edit_url || node_edit_url(node.id) || null;
 }
 
 function make_card_ctx_renderer(node) {
@@ -476,6 +526,7 @@ function make_card_ctx_renderer(node) {
 		var top = y - h / 2;
 		var muted = node._muted === true;
 		var eyeReserve = L.eyeSize + 10;
+		var editReserve = node._can_edit ? (L.editSize + 10) : 0;
 		var collapsedPorts = node._collapsed_ports || {};
 		var egressPorts = node._egress_ports || {};
 
@@ -604,15 +655,31 @@ function make_card_ctx_renderer(node) {
 				ctx.lineWidth = selected ? 3 : 2;
 				ctx.stroke();
 
-				// Titlebar text
+				// Titlebar text (leave room for edit icon)
 				ctx.fillStyle = textColor;
 				ctx.textBaseline = 'middle';
 				ctx.font = L.titleFont;
 				var titleText = ((card.icon ? card.icon + ' ' : '') + (card.title || '')).trim();
-				ctx.fillText(titleText, left + L.padX, top + L.titleH / 2, w - L.padX * 2);
+				ctx.fillText(titleText, left + L.padX, top + L.titleH / 2, w - L.padX * 2 - editReserve);
 
 				ctx.font = L.nameFont;
-				ctx.fillText(card.name || '', left + L.padX, top + L.titleH + L.nameH / 2, w - L.padX * 2);
+				ctx.fillText(card.name || '', left + L.padX, top + L.titleH + L.nameH / 2, w - L.padX * 2 - editReserve);
+
+				// Edit affordance — top-right of titlebar (double-click card or click icon)
+				if (node._can_edit && !node._path_hidden) {
+					var editCx = left + w - L.padX - L.editSize / 2;
+					var editCy = top + L.titleH / 2;
+					var editHalf = L.editSize / 2 + 3;
+					node._edit_hit = {
+						l: (editCx - editHalf) - x,
+						r: (editCx + editHalf) - x,
+						t: (editCy - editHalf) - y,
+						b: (editCy + editHalf) - y,
+					};
+					draw_edit_icon(ctx, editCx, editCy, L.editSize, textColor);
+				} else {
+					node._edit_hit = null;
+				}
 
 				// Synthetic / unlabeled egress ports (e.g. out_e0) — eye just inside right edge
 				Object.keys(egressPorts).forEach(function(pname) {
@@ -790,24 +857,41 @@ function glue_ports_to_cards(card_nodes) {
 }
 
 /**
- * Waypoints sit a few px left of the target's left edge so the final segment
- * always points right into the card. Always present — no per-frame edge rebuilds.
+ * Waypoints stub out from egress and into ingress so arrows always point
+ * rightward, and reverse/loop-back edges get a clean exit before turning.
  */
-var WAYPOINT_GAP = 10;
+var WAYPOINT_GAP = 30;
 
 function is_waypoint_id(id) {
 	return typeof id === 'string' && id.indexOf('wp::') === 0;
 }
 
-function edge_segment_ids(edgeId) {
-	return [edgeId + '::a', edgeId + '::b'];
+function waypoint_ids(edgeId) {
+	return {
+		out: 'wp::out::' + edgeId,
+		in:  'wp::in::'  + edgeId,
+	};
 }
 
-function waypoint_pos_for_target(tp, toCard, ingressPos) {
-	var halfW = (toCard && toCard._card_dims) ? toCard._card_dims.width / 2 : CARD_LAYOUT.width / 2;
+function edge_segment_ids(edgeId) {
+	return [edgeId + '::a', edgeId + '::b', edgeId + '::c'];
+}
+
+function make_waypoint_node(id, x, y) {
 	return {
-		x: tp.x - halfW - WAYPOINT_GAP,
-		y: ingressPos ? ingressPos.y : tp.y,
+		id: id,
+		x: x,
+		y: y,
+		shape: 'dot',
+		size: 1,
+		color: { background: 'rgba(0,0,0,0)', border: 'rgba(0,0,0,0)' },
+		borderWidth: 0,
+		physics: false,
+		fixed: { x: true, y: true },
+		chosen: false,
+		opacity: 0,
+		_is_port: true,
+		_is_waypoint: true,
 	};
 }
 
@@ -817,25 +901,34 @@ function build_waypoint_nodes(free_nodes, logical_edges) {
 	var nodes = [];
 
 	logical_edges.forEach(function(e) {
+		var fromCard = card_map[e._from_card];
 		var toCard = card_map[e._to_card];
-		if (!toCard) return;
-		var tp = { x: toCard.x || 0, y: toCard.y || 0 };
-		var wp = waypoint_pos_for_target(tp, toCard, null);
-		nodes.push({
-			id: 'wp::' + e.id,
-			x: wp.x,
-			y: wp.y,
-			shape: 'dot',
-			size: 1,
-			color: { background: 'rgba(0,0,0,0)', border: 'rgba(0,0,0,0)' },
-			borderWidth: 0,
-			physics: false,
-			fixed: { x: true, y: true },
-			chosen: false,
-			opacity: 0,
-			_is_port: true,
-			_is_waypoint: true,
-		});
+		if (!fromCard || !toCard) return;
+
+		var fromHalf = (fromCard._card_dims && fromCard._card_dims.width)
+			? fromCard._card_dims.width / 2
+			: CARD_LAYOUT.width / 2;
+		var toHalf = (toCard._card_dims && toCard._card_dims.width)
+			? toCard._card_dims.width / 2
+			: CARD_LAYOUT.width / 2;
+
+		var outY = fromCard.y || 0;
+		if (e.from_port && fromCard._card_dims && fromCard._card_dims.ports[e.from_port]) {
+			outY += fromCard._card_dims.ports[e.from_port].y || 0;
+		}
+		var inY = toCard.y || 0;
+
+		var ids = waypoint_ids(e.id);
+		nodes.push(make_waypoint_node(
+			ids.out,
+			(fromCard.x || 0) + fromHalf + WAYPOINT_GAP,
+			outY
+		));
+		nodes.push(make_waypoint_node(
+			ids.in,
+			(toCard.x || 0) - toHalf - WAYPOINT_GAP,
+			inY
+		));
 	});
 	return nodes;
 }
@@ -843,6 +936,7 @@ function build_waypoint_nodes(free_nodes, logical_edges) {
 function split_edges_via_waypoints(logical_edges) {
 	var segs = [];
 	logical_edges.forEach(function(e) {
+		var ids = waypoint_ids(e.id);
 		var style = {
 			font: e.font,
 			color: e.color,
@@ -850,16 +944,26 @@ function split_edges_via_waypoints(logical_edges) {
 			smooth: { type: 'cubicBezier', forceDirection: 'horizontal', roundness: 0.35 },
 			_logical: e.id,
 		};
+		// Egress stub — leaves to the right of the source
 		segs.push(Object.assign({}, style, {
 			id: e.id + '::a',
 			from: e.from,
-			to: 'wp::' + e.id,
+			to: ids.out,
 			label: e.label || '',
 			arrows: { to: { enabled: false } },
 		}));
+		// Mid span between egress stub and ingress stub
 		segs.push(Object.assign({}, style, {
 			id: e.id + '::b',
-			from: 'wp::' + e.id,
+			from: ids.out,
+			to: ids.in,
+			label: '',
+			arrows: { to: { enabled: false } },
+		}));
+		// Ingress stub — always approaches from the left into the target
+		segs.push(Object.assign({}, style, {
+			id: e.id + '::c',
+			from: ids.in,
 			to: e.to,
 			label: '',
 			arrows: { to: { enabled: true, scaleFactor: 0.7, type: 'arrow' } },
@@ -871,17 +975,18 @@ function split_edges_via_waypoints(logical_edges) {
 function move_waypoints(free_nodes, logical_edges) {
 	if (!network) return;
 	var positions = network.getPositions();
-	var card_map = {};
-	free_nodes.forEach(function(n) { card_map[n.id] = n; });
 
 	logical_edges.forEach(function(e) {
-		var tp = positions[e._to_card];
-		var toCard = card_map[e._to_card];
-		if (!tp || !toCard) return;
+		var ids = waypoint_ids(e.id);
+		var egressPos = positions[e.from];
 		var ingressPos = positions[e.to];
-		var wp = waypoint_pos_for_target(tp, toCard, ingressPos);
 		try {
-			network.moveNode('wp::' + e.id, wp.x, wp.y);
+			if (egressPos) {
+				network.moveNode(ids.out, egressPos.x + WAYPOINT_GAP, egressPos.y);
+			}
+			if (ingressPos) {
+				network.moveNode(ids.in, ingressPos.x - WAYPOINT_GAP, ingressPos.y);
+			}
 		} catch (err) { /* ignore */ }
 	});
 }
@@ -1357,6 +1462,7 @@ function render_diagram(data) {
 			var node_updates = [];
 			free_nodes.forEach(function(n) {
 				n._path_hidden = !!hiddenNodes[n.id];
+				n._can_edit = !!resolve_edit_url(n);
 				n.ctxRenderer = make_card_ctx_renderer(n);
 				node_updates.push({
 					id: n.id,
@@ -1365,6 +1471,7 @@ function render_diagram(data) {
 					_path_hidden: n._path_hidden,
 					_egress_ports: n._egress_ports,
 					_collapsed_ports: n._collapsed_ports,
+					_can_edit: n._can_edit,
 				});
 				(card_ports[n.id] || []).forEach(function(pid) {
 					node_updates.push({ id: pid, hidden: n._path_hidden });
@@ -1379,9 +1486,9 @@ function render_diagram(data) {
 					if (!edgesDS.get(sid)) return;
 					edge_updates.push({ id: sid, hidden: hide });
 				});
-				if (nodesDS.get('wp::' + e.id)) {
-					node_updates.push({ id: 'wp::' + e.id, hidden: hide });
-				}
+				var wpIds = waypoint_ids(e.id);
+				if (nodesDS.get(wpIds.out)) node_updates.push({ id: wpIds.out, hidden: hide });
+				if (nodesDS.get(wpIds.in))  node_updates.push({ id: wpIds.in,  hidden: hide });
 			});
 			if (node_updates.length) nodesDS.update(node_updates);
 			if (edge_updates.length) edgesDS.update(edge_updates);
@@ -1507,11 +1614,26 @@ function render_diagram(data) {
 		}
 
 		var suppress_select = false;
+
+		function open_node_edit(nodeId) {
+			if (is_port_id(nodeId)) nodeId = port_parent[nodeId] || nodeId;
+			var node = node_map[nodeId];
+			var url = resolve_edit_url(node) || node_edit_url(nodeId);
+			if (url) window.open(url, '_blank');
+		}
+
 		network.on('click', function(params) {
 			var pt = params.pointer && params.pointer.canvas;
 			if (!pt) return;
 			for (var i = 0; i < free_nodes.length; i++) {
 				var n = free_nodes[i];
+				if (edit_hit_test(n, pt)) {
+					suppress_select = true;
+					open_node_edit(n.id);
+					network.unselectAll();
+					clear_selection_highlight();
+					return;
+				}
 				var port = eye_hit_test(n, pt);
 				if (port) {
 					suppress_select = true;
@@ -1551,13 +1673,15 @@ function render_diagram(data) {
 		});
 
 		network.on('doubleClick', function(params) {
-			if (params.nodes.length === 0) return;
+			if (!params.nodes || params.nodes.length === 0) return;
 			var nodeId = params.nodes[0];
 			if (is_waypoint_id(nodeId)) return;
 			if (is_port_id(nodeId)) nodeId = port_parent[nodeId] || nodeId;
-			var node   = node_map[nodeId];
-			var url    = (node && node.edit_url) || node_edit_url(nodeId);
-			if (url) window.open(url, '_blank');
+			var pt = params.pointer && params.pointer.canvas;
+			var node = node_map[nodeId];
+			// Don't treat eye toggles as edit
+			if (pt && node && eye_hit_test(node, pt)) return;
+			open_node_edit(nodeId);
 		});
 
 		loading_element.style.display = 'none';
