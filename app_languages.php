@@ -416,6 +416,11 @@ $text['label-layout_left_right']['zh-cn'] = "从左到右";
 $text['label-layout_left_right']['ja-jp'] = "左から右";
 $text['label-layout_left_right']['ko-kr'] = "왼쪽에서 오른쪽";
 
+$text['label-layout_compact']['en-us'] = "Compact";
+$text['label-layout_compact']['en-gb'] = "Compact";
+$text['label-layout_spread']['en-us'] = "Spread";
+$text['label-layout_spread']['en-gb'] = "Spread";
+
 $text['label-legend']['en-us'] = "Legend";
 $text['label-legend']['en-gb'] = "Legend";
 $text['label-legend']['ar-eg'] = "مفتاح الرسم البياني";

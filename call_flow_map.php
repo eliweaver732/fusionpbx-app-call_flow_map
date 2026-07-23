@@ -244,11 +244,11 @@ echo "			</div>\n";
 echo "			<div>\n";
 echo "				<label class='lbl' style='display:block; margin-bottom:4px;'>".($text['label-layout'] ?? 'Layout')."</label>\n";
 echo "				<div class='layout-toggle' id='layout-toggle' role='group' aria-label='".escape($text['label-layout'] ?? 'Layout')."'>\n";
-echo "					<button type='button' class='layout-toggle-btn".($selected_layout === 'UD' ? ' active' : '')."' data-layout='UD' onclick='set_layout(\"UD\");' title='".escape($text['label-layout_top_down'] ?? 'Top-Down')."'>\n";
-echo "						<i class='fas fa-arrow-down'></i> ".escape($text['label-layout_top_down'] ?? 'Top-Down')."\n";
+echo "					<button type='button' class='layout-toggle-btn".($selected_layout === 'UD' ? ' active' : '')."' data-layout='UD' onclick='set_layout(\"UD\");' title='".escape($text['label-layout_compact'] ?? $text['label-layout_top_down'] ?? 'Compact')."'>\n";
+echo "						<i class='fas fa-bars'></i> ".escape($text['label-layout_compact'] ?? 'Compact')."\n";
 echo "					</button>\n";
-echo "					<button type='button' class='layout-toggle-btn".($selected_layout === 'LR' ? ' active' : '')."' data-layout='LR' onclick='set_layout(\"LR\");' title='".escape($text['label-layout_left_right'] ?? 'Left-Right')."'>\n";
-echo "						<i class='fas fa-arrow-right'></i> ".escape($text['label-layout_left_right'] ?? 'Left-Right')."\n";
+echo "					<button type='button' class='layout-toggle-btn".($selected_layout === 'LR' ? ' active' : '')."' data-layout='LR' onclick='set_layout(\"LR\");' title='".escape($text['label-layout_spread'] ?? $text['label-layout_left_right'] ?? 'Spread')."'>\n";
+echo "						<i class='fas fa-grip-lines-vertical'></i> ".escape($text['label-layout_spread'] ?? 'Spread')."\n";
 echo "					</button>\n";
 echo "				</div>\n";
 echo "				<input type='hidden' name='layout' id='sel-layout' value='".escape($selected_layout)."' />\n";
@@ -303,34 +303,38 @@ echo "</form>\n";
 // Starting points data (for dynamic population of destination select)
 var starting_points = <?php echo json_encode($starting_points); ?>;
 
-// Node style map (body fill / border / titlebar / footer)
+// Node style map (body fill / border / titlebar / footer / option row)
 var node_styles = {
-	inbound:        { background: '#BBDEFB', border: '#1565C0', titlebar: '#90CAF9', footer: '#A8D0F0', font: '#0D47A1' },
-	ivr:            { background: '#FFE0B2', border: '#BF360C', titlebar: '#FFB74D', footer: '#F5C896', font: '#BF360C' },
-	ring_group:     { background: '#C8E6C9', border: '#1B5E20', titlebar: '#81C784', footer: '#A5D6A7', font: '#1B5E20' },
-	extension:      { background: '#B2EBF2', border: '#006064', titlebar: '#4DD0E1', footer: '#80DEEA', font: '#006064' },
-	call_flow:      { background: '#B3E5FC', border: '#01579B', titlebar: '#4FC3F7', footer: '#81D4FA', font: '#01579B' },
-	time_condition: { background: '#FFF9C4', border: '#F57F17', titlebar: '#FFF176', footer: '#F0E68C', font: '#E65100' },
-	contact_center: { background: '#DCEDC8', border: '#33691E', titlebar: '#AED581', footer: '#C5E1A5', font: '#1B5E20' },
-	voicemail:      { background: '#E1BEE7', border: '#6A1B9A', titlebar: '#CE93D8', footer: '#D1A7DB', font: '#4A148C' },
-	hangup:         { background: '#FFCDD2', border: '#B71C1C', titlebar: '#EF9A9A', footer: '#F0B0B0', font: '#B71C1C' },
-	recording:      { background: '#F5F5F5', border: '#616161', titlebar: '#E0E0E0', footer: '#EEEEEE', font: '#424242' },
-	tone:           { background: '#F5F5F5', border: '#616161', titlebar: '#E0E0E0', footer: '#EEEEEE', font: '#424242' },
-	external:       { background: '#F5F5F5', border: '#616161', titlebar: '#E0E0E0', footer: '#EEEEEE', font: '#424242' },
+	inbound:        { background: '#BBDEFB', border: '#1565C0', titlebar: '#90CAF9', footer: '#A8D0F0', row: '#90CAF9', font: '#0D47A1' },
+	ivr:            { background: '#FFE0B2', border: '#BF360C', titlebar: '#FFB74D', footer: '#F5C896', row: '#FFB74D', font: '#BF360C' },
+	ring_group:     { background: '#C8E6C9', border: '#1B5E20', titlebar: '#81C784', footer: '#A5D6A7', row: '#81C784', font: '#1B5E20' },
+	extension:      { background: '#B2EBF2', border: '#006064', titlebar: '#4DD0E1', footer: '#80DEEA', row: '#4DD0E1', font: '#006064' },
+	call_flow:      { background: '#B3E5FC', border: '#01579B', titlebar: '#4FC3F7', footer: '#81D4FA', row: '#4FC3F7', font: '#01579B' },
+	time_condition: { background: '#FFF9C4', border: '#F57F17', titlebar: '#FFF176', footer: '#F0E68C', row: '#FFE082', font: '#E65100' },
+	contact_center: { background: '#DCEDC8', border: '#33691E', titlebar: '#AED581', footer: '#C5E1A5', row: '#AED581', font: '#1B5E20' },
+	voicemail:      { background: '#E1BEE7', border: '#6A1B9A', titlebar: '#CE93D8', footer: '#D1A7DB', row: '#CE93D8', font: '#4A148C' },
+	hangup:         { background: '#FFCDD2', border: '#B71C1C', titlebar: '#EF9A9A', footer: '#F0B0B0', row: '#EF9A9A', font: '#B71C1C' },
+	recording:      { background: '#F5F5F5', border: '#616161', titlebar: '#E0E0E0', footer: '#EEEEEE', row: '#E0E0E0', font: '#424242' },
+	tone:           { background: '#F5F5F5', border: '#616161', titlebar: '#E0E0E0', footer: '#EEEEEE', row: '#E0E0E0', font: '#424242' },
+	external:       { background: '#F5F5F5', border: '#616161', titlebar: '#E0E0E0', footer: '#EEEEEE', row: '#E0E0E0', font: '#424242' },
 };
 
 var CARD_LAYOUT = {
-	width: 232,
-	titleH: 26,
-	nameH: 16,
-	padX: 8,
-	padTop: 4,
-	padBottom: 4,
-	rowH: 16,
-	sectionLineH: 14,
-	sectionPad: 3,
-	footerH: 22,
-	radius: 4,
+	width: 300,
+	titleH: 32,
+	nameH: 20,
+	padX: 12,
+	padTop: 6,
+	padBottom: 6,
+	rowH: 24,
+	sectionLineH: 18,
+	sectionPad: 4,
+	footerH: 30,
+	radius: 5,
+	portR: 5,
+	titleFont: 'bold 14px Arial',
+	nameFont: '13px Arial',
+	bodyFont: '13px Arial',
 };
 
 // Color legend (same items as the web UI strip above the diagram)
@@ -419,6 +423,16 @@ function make_card_ctx_renderer(node) {
 			}
 		}
 
+		function draw_exit_dot(cx, cy) {
+			ctx.beginPath();
+			ctx.arc(cx, cy, L.portR, 0, Math.PI * 2);
+			ctx.fillStyle = muted ? '#9E9E9E' : colors.border;
+			ctx.fill();
+			ctx.lineWidth = 1.5;
+			ctx.strokeStyle = '#ffffff';
+			ctx.stroke();
+		}
+
 		return {
 			drawNode: function() {
 				ctx.save();
@@ -454,46 +468,74 @@ function make_card_ctx_renderer(node) {
 					ctx.restore();
 				}
 
-				// Border
-				round_rect(left, top, w, h, L.radius);
-				ctx.strokeStyle = muted ? '#C0C0C0' : colors.border;
-				ctx.lineWidth = selected ? 3 : 2;
-				ctx.stroke();
-
 				var textColor = muted ? '#9E9E9E' : colors.font;
+				var rowBg = muted ? '#D0D0D0' : (colors.row || colors.titlebar);
+				var exitX = left + w - 1;
+				var exitDots = [];
 
-				// Titlebar text
-				ctx.fillStyle = textColor;
-				ctx.textBaseline = 'middle';
-				ctx.font = 'bold 12px Arial';
-				var titleText = ((card.icon ? card.icon + ' ' : '') + (card.title || '')).trim();
-				ctx.fillText(titleText, left + L.padX, top + L.titleH / 2, w - L.padX * 2);
-
-				ctx.font = '11px Arial';
-				ctx.fillText(card.name || '', left + L.padX, top + L.titleH + L.nameH / 2, w - L.padX * 2);
-
-				// Body
+				// Body (option/section rows with darker bands)
 				var cursor = top + L.titleH + L.nameH + L.padTop;
-				ctx.font = '11px Arial';
+				ctx.font = L.bodyFont;
+				ctx.textBaseline = 'middle';
 				(card.body || []).forEach(function(item) {
 					if (item.type === 'section') {
 						cursor += L.sectionPad;
-						(item.lines || []).forEach(function(line) {
-							ctx.fillText(line, left + L.padX, cursor + L.sectionLineH / 2, w - L.padX * 2);
+						var lines = item.lines || [];
+						var sectionTop = cursor;
+						var sectionH = Math.max(L.sectionLineH, lines.length * L.sectionLineH);
+						if (item.port) {
+							ctx.fillStyle = rowBg;
+							ctx.fillRect(left + 1, sectionTop, w - 2, sectionH);
+						}
+						ctx.fillStyle = textColor;
+						lines.forEach(function(line) {
+							ctx.fillText(line, left + L.padX, cursor + L.sectionLineH / 2, w - L.padX * 2 - 12);
 							cursor += L.sectionLineH;
 						});
+						if (item.port) {
+							exitDots.push({ x: exitX, y: sectionTop + sectionH / 2 });
+						}
 						cursor += L.sectionPad;
 					} else {
-						ctx.fillText(item.text || '', left + L.padX, cursor + L.rowH / 2, w - L.padX * 2);
+						if (item.port) {
+							ctx.fillStyle = rowBg;
+							ctx.fillRect(left + 1, cursor, w - 2, L.rowH);
+						}
+						ctx.fillStyle = textColor;
+						ctx.fillText(item.text || '', left + L.padX, cursor + L.rowH / 2, w - L.padX * 2 - 12);
+						if (item.port) {
+							exitDots.push({ x: exitX, y: cursor + L.rowH / 2 });
+						}
 						cursor += L.rowH;
 					}
 				});
 
 				// Timeout footer label
 				if (card.timeout) {
-					ctx.font = '11px Arial';
-					ctx.fillText(card.timeout.label || '', left + L.padX, top + h - L.footerH / 2, w - L.padX * 2);
+					ctx.font = L.bodyFont;
+					ctx.fillStyle = textColor;
+					ctx.fillText(card.timeout.label || '', left + L.padX, top + h - L.footerH / 2, w - L.padX * 2 - 12);
+					exitDots.push({ x: exitX, y: top + h - L.footerH / 2 });
 				}
+
+				// Border
+				round_rect(left, top, w, h, L.radius);
+				ctx.strokeStyle = muted ? '#C0C0C0' : colors.border;
+				ctx.lineWidth = selected ? 3 : 2;
+				ctx.stroke();
+
+				// Titlebar text
+				ctx.fillStyle = textColor;
+				ctx.textBaseline = 'middle';
+				ctx.font = L.titleFont;
+				var titleText = ((card.icon ? card.icon + ' ' : '') + (card.title || '')).trim();
+				ctx.fillText(titleText, left + L.padX, top + L.titleH / 2, w - L.padX * 2);
+
+				ctx.font = L.nameFont;
+				ctx.fillText(card.name || '', left + L.padX, top + L.titleH + L.nameH / 2, w - L.padX * 2);
+
+				// Exit connector dots on top of border
+				exitDots.forEach(function(d) { draw_exit_dot(d.x, d.y); });
 
 				ctx.restore();
 			},
@@ -522,12 +564,13 @@ function build_port_nodes(card_nodes) {
 			var pid = port_id(n.id, pname);
 			card_ports[n.id].push(pid);
 			port_parent[pid] = n.id;
+			// Invisible anchors — exit circles are drawn on the card itself
 			ports.push({
 				id: pid,
 				x: (n.x || 0) + dims.ports[pname].x,
 				y: (n.y || 0) + dims.ports[pname].y,
 				shape: 'dot',
-				size: 2,
+				size: 1,
 				color: { background: 'rgba(0,0,0,0)', border: 'rgba(0,0,0,0)' },
 				borderWidth: 0,
 				physics: false,
@@ -688,8 +731,11 @@ function render_diagram(data) {
 		return;
 	}
 
-	var layout_direction = (document.getElementById('sel-layout').value === 'LR') ? 'LR' : 'UD';
-	var edge_force_direction = (layout_direction === 'LR') ? 'horizontal' : 'vertical';
+	// Always flow left → right; toggle only changes stacking density
+	var stack_mode = (document.getElementById('sel-layout').value === 'LR') ? 'spread' : 'compact';
+	var stack = (stack_mode === 'spread')
+		? { levelSeparation: 300, nodeSpacing: 56, treeSpacing: 90, nodeDistance: 150 }
+		: { levelSeparation: 240, nodeSpacing: 32, treeSpacing: 55, nodeDistance: 120 };
 
 	var styled_nodes = data.nodes.map(function(n) {
 		var colors = card_style_for(n.type);
@@ -701,7 +747,7 @@ function render_diagram(data) {
 			size: Math.max(dims.width, dims.height) / 2,
 			borderWidth: 0,
 			color: { background: colors.background, border: colors.border },
-			font: { color: colors.font, size: 12, face: 'Arial' },
+			font: { color: colors.font, size: 13, face: 'Arial' },
 			label: undefined,
 			chosen: false,
 			opacity: 1,
@@ -717,10 +763,10 @@ function render_diagram(data) {
 			from: e.from,
 			to: e.to,
 			label: '',
-			arrows: { to: { enabled: true, scaleFactor: 0.6, type: 'arrow' } },
+			arrows: { to: { enabled: true, scaleFactor: 0.7, type: 'arrow' } },
 			color: { color: '#555', highlight: '#555', opacity: 0.85 },
 			width: 1.5,
-			smooth: { type: 'cubicBezier', forceDirection: edge_force_direction, roundness: 0.6 },
+			smooth: { type: 'cubicBezier', forceDirection: 'horizontal', roundness: 0.55 },
 		};
 	});
 
@@ -733,11 +779,11 @@ function render_diagram(data) {
 			layout: {
 				hierarchical: {
 					enabled:              true,
-					direction:            layout_direction,
+					direction:            'LR',
 					sortMethod:           'directed',
-					levelSeparation:      200,
-					nodeSpacing:          40,
-					treeSpacing:          60,
+					levelSeparation:      stack.levelSeparation,
+					nodeSpacing:          stack.nodeSpacing,
+					treeSpacing:          stack.treeSpacing,
 					blockShifting:        true,
 					edgeMinimization:     true,
 					parentCentralization: true,
@@ -746,7 +792,7 @@ function render_diagram(data) {
 			physics: {
 				enabled: true,
 				solver: 'hierarchicalRepulsion',
-				hierarchicalRepulsion: { nodeDistance: 120, avoidOverlap: 1, damping: 0.12 },
+				hierarchicalRepulsion: { nodeDistance: stack.nodeDistance, avoidOverlap: 1, damping: 0.12 },
 				stabilization: { enabled: true, iterations: 300 },
 			},
 			interaction: { dragNodes: false, zoomView: false, dragView: false },
@@ -779,11 +825,11 @@ function render_diagram(data) {
 
 		var wired_edges = rewire_edges_to_ports(data.edges, port_map).map(function(e) {
 			return Object.assign({}, e, {
-				arrows: { to: { enabled: true, scaleFactor: 0.6, type: 'arrow' } },
-				font:   { size: 11, align: 'middle', color: '#444', strokeWidth: 2, strokeColor: '#fff' },
+				arrows: { to: { enabled: true, scaleFactor: 0.7, type: 'arrow' } },
+				font:   { size: 12, align: 'middle', color: '#444', strokeWidth: 2, strokeColor: '#fff' },
 				color:  { color: '#555', highlight: '#555', opacity: 0.85 },
 				width:  1.5,
-				smooth: { type: 'cubicBezier', forceDirection: edge_force_direction, roundness: 0.55 },
+				smooth: { type: 'cubicBezier', forceDirection: 'horizontal', roundness: 0.55 },
 			});
 		});
 
