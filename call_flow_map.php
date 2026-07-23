@@ -333,7 +333,7 @@ var CARD_LAYOUT = {
 	footerH: 30,
 	radius: 5,
 	portR: 5,
-	eyeSize: 14,
+	eyeSize: 12,
 	titleFont: 'bold 14px Arial',
 	nameFont: '13px Arial',
 	bodyFont: '13px Arial',
@@ -430,9 +430,7 @@ function draw_eye_icon(ctx, cx, cy, size, collapsed, color) {
 	ctx.restore();
 }
 
-function eye_hit_test(node, canvasPt) {
-	if (!node || !node._has_egress || node._path_hidden || !node._eye_hit) return false;
-	var hit = node._eye_hit;
+function node_canvas_pos(node) {
 	var nx = node.x || 0;
 	var ny = node.y || 0;
 	if (network) {
@@ -441,9 +439,22 @@ function eye_hit_test(node, canvasPt) {
 			if (pos) { nx = pos.x; ny = pos.y; }
 		} catch (err) { /* ignore */ }
 	}
-	var lx = canvasPt.x - nx;
-	var ly = canvasPt.y - ny;
-	return lx >= hit.l && lx <= hit.r && ly >= hit.t && ly <= hit.b;
+	return { x: nx, y: ny };
+}
+
+/** @returns {string|null} egress port name if the eye was hit */
+function eye_hit_test(node, canvasPt) {
+	if (!node || node._path_hidden || !node._eye_hits || !node._eye_hits.length) return null;
+	var pos = node_canvas_pos(node);
+	var lx = canvasPt.x - pos.x;
+	var ly = canvasPt.y - pos.y;
+	for (var i = 0; i < node._eye_hits.length; i++) {
+		var hit = node._eye_hits[i];
+		if (lx >= hit.l && lx <= hit.r && ly >= hit.t && ly <= hit.b) {
+			return hit.port;
+		}
+	}
+	return null;
 }
 
 function make_card_ctx_renderer(node) {
@@ -464,8 +475,9 @@ function make_card_ctx_renderer(node) {
 		var left = x - w / 2;
 		var top = y - h / 2;
 		var muted = node._muted === true;
-		var showEye = node._has_egress === true && node._path_hidden !== true;
-		var eyeReserve = showEye ? (L.eyeSize + 10) : 0;
+		var eyeReserve = L.eyeSize + 10;
+		var collapsedPorts = node._collapsed_ports || {};
+		var egressPorts = node._egress_ports || {};
 
 		function round_rect(rx, ry, rw, rh, r) {
 			ctx.beginPath();
@@ -476,10 +488,25 @@ function make_card_ctx_renderer(node) {
 			}
 		}
 
+		function draw_row_eye(portName, eyeCy, color) {
+			if (!egressPorts[portName] || node._path_hidden) return;
+			var eyeCx = left + w - L.padX - L.eyeSize / 2;
+			var half = L.eyeSize / 2 + 3;
+			node._eye_hits.push({
+				port: portName,
+				l: (eyeCx - half) - x,
+				r: (eyeCx + half) - x,
+				t: (eyeCy - half) - y,
+				b: (eyeCy + half) - y,
+			});
+			draw_eye_icon(ctx, eyeCx, eyeCy, L.eyeSize, !!collapsedPorts[portName], color);
+		}
+
 		return {
 			drawNode: function() {
 				ctx.save();
 				if (muted) ctx.globalAlpha = 0.22;
+				node._eye_hits = [];
 
 				// Shadow
 				ctx.shadowColor = 'rgba(0,0,0,0.15)';
@@ -530,10 +557,14 @@ function make_card_ctx_renderer(node) {
 							ctx.fillRect(left + 1, sectionTop, w - 2, sectionH);
 						}
 						ctx.fillStyle = textColor;
+						var textMax = w - L.padX * 2 - (item.port && egressPorts[item.port] ? eyeReserve : 12);
 						lines.forEach(function(line) {
-							ctx.fillText(line, left + L.padX, cursor + L.sectionLineH / 2, w - L.padX * 2 - 12);
+							ctx.fillText(line, left + L.padX, cursor + L.sectionLineH / 2, textMax);
 							cursor += L.sectionLineH;
 						});
+						if (item.port) {
+							draw_row_eye(item.port, sectionTop + sectionH / 2, textColor);
+						}
 						cursor += L.sectionPad;
 					} else {
 						if (is_banded_row(item)) {
@@ -541,7 +572,11 @@ function make_card_ctx_renderer(node) {
 							ctx.fillRect(left + 1, cursor, w - 2, L.rowH);
 						}
 						ctx.fillStyle = textColor;
-						ctx.fillText(item.text || '', left + L.padX, cursor + L.rowH / 2, w - L.padX * 2 - 12);
+						var rowMax = w - L.padX * 2 - (item.port && egressPorts[item.port] ? eyeReserve : 12);
+						ctx.fillText(item.text || '', left + L.padX, cursor + L.rowH / 2, rowMax);
+						if (item.port) {
+							draw_row_eye(item.port, cursor + L.rowH / 2, textColor);
+						}
 						cursor += L.rowH;
 						if (is_banded_row(item) && idx < bodyItems.length - 1 && is_banded_row(bodyItems[idx + 1])) {
 							cursor += L.rowGap;
@@ -549,11 +584,18 @@ function make_card_ctx_renderer(node) {
 					}
 				});
 
-				// Timeout footer label
+				// Timeout footer label + eye
 				if (card.timeout) {
+					var tPort = card.timeout.port || 'timeout';
 					ctx.font = L.bodyFont;
 					ctx.fillStyle = textColor;
-					ctx.fillText(card.timeout.label || '', left + L.padX, top + h - L.footerH / 2, w - L.padX * 2 - 12);
+					ctx.fillText(
+						card.timeout.label || '',
+						left + L.padX,
+						top + h - L.footerH / 2,
+						w - L.padX * 2 - (egressPorts[tPort] ? eyeReserve : 12)
+					);
+					draw_row_eye(tPort, top + h - L.footerH / 2, textColor);
 				}
 
 				// Border
@@ -562,31 +604,23 @@ function make_card_ctx_renderer(node) {
 				ctx.lineWidth = selected ? 3 : 2;
 				ctx.stroke();
 
-				// Titlebar text (leave room for eye on the right)
+				// Titlebar text
 				ctx.fillStyle = textColor;
 				ctx.textBaseline = 'middle';
 				ctx.font = L.titleFont;
 				var titleText = ((card.icon ? card.icon + ' ' : '') + (card.title || '')).trim();
-				ctx.fillText(titleText, left + L.padX, top + L.titleH / 2, w - L.padX * 2 - eyeReserve);
+				ctx.fillText(titleText, left + L.padX, top + L.titleH / 2, w - L.padX * 2);
 
 				ctx.font = L.nameFont;
-				ctx.fillText(card.name || '', left + L.padX, top + L.titleH + L.nameH / 2, w - L.padX * 2 - eyeReserve);
+				ctx.fillText(card.name || '', left + L.padX, top + L.titleH + L.nameH / 2, w - L.padX * 2);
 
-				// Eye toggle — just inside top-right of the card
-				if (showEye) {
-					var eyeCx = left + w - L.padX - L.eyeSize / 2;
-					var eyeCy = top + L.titleH / 2;
-					var half = L.eyeSize / 2 + 3;
-					node._eye_hit = {
-						l: (eyeCx - half) - x,
-						r: (eyeCx + half) - x,
-						t: (eyeCy - half) - y,
-						b: (eyeCy + half) - y,
-					};
-					draw_eye_icon(ctx, eyeCx, eyeCy, L.eyeSize, node._collapsed === true, textColor);
-				} else {
-					node._eye_hit = null;
-				}
+				// Synthetic / unlabeled egress ports (e.g. out_e0) — eye just inside right edge
+				Object.keys(egressPorts).forEach(function(pname) {
+					if (pname.indexOf('out_') !== 0) return;
+					var base = dims.ports[pname];
+					var eyeCy = base ? (y + (base.y || 0)) : y;
+					draw_row_eye(pname, eyeCy, textColor);
+				});
 
 				ctx.restore();
 			},
@@ -895,6 +929,7 @@ function draw_port_connectors(ctx, free_nodes, edges) {
 	if (!network) return;
 	var used = {};
 	(edges || []).forEach(function(e) {
+		if (e._path_hidden) return;
 		used[e.from] = true;
 		used[e.to] = true;
 	});
@@ -1240,10 +1275,11 @@ function render_diagram(data) {
 		wired_edges.forEach(function(e) {
 			var fromCard = e._from_card || port_parent[e.from] || e.from;
 			var toCard = e._to_card || port_parent[e.to] || e.to;
+			var fromPort = e.from_port || ('out_' + e.id);
 			if (!outgoing[fromCard]) outgoing[fromCard] = [];
-			outgoing[fromCard].push({ id: e.id, from: fromCard, to: toCard });
+			outgoing[fromCard].push({ id: e.id, from: fromCard, to: toCard, from_port: fromPort });
 			if (!incoming[toCard]) incoming[toCard] = [];
-			incoming[toCard].push({ id: e.id, from: fromCard, to: toCard });
+			incoming[toCard].push({ id: e.id, from: fromCard, to: toCard, from_port: fromPort });
 		});
 
 		var path_hidden_edges = {};
@@ -1257,14 +1293,39 @@ function render_diagram(data) {
 			return true;
 		}
 
-		function collect_path_hide_from(rootId, hiddenNodes, hiddenEdges) {
-			(outgoing[rootId] || []).forEach(function(e) {
+		function exclusively_ingressed_by_port(childId, parentId, portName) {
+			var inns = incoming[childId] || [];
+			if (!inns.length) return false;
+			for (var i = 0; i < inns.length; i++) {
+				if (inns[i].from !== parentId || inns[i].from_port !== portName) return false;
+			}
+			return true;
+		}
+
+		/** Hide all egress from a fully-hidden card and exclusive descendants. */
+		function collect_all_egress_from(cardId, hiddenNodes, hiddenEdges) {
+			(outgoing[cardId] || []).forEach(function(e) {
 				hiddenEdges[e.id] = true;
 				var child = e.to;
-				if (exclusively_ingressed_by(child, rootId)) {
+				if (exclusively_ingressed_by(child, cardId)) {
 					if (!hiddenNodes[child]) {
 						hiddenNodes[child] = true;
-						collect_path_hide_from(child, hiddenNodes, hiddenEdges);
+						collect_all_egress_from(child, hiddenNodes, hiddenEdges);
+					}
+				}
+			});
+		}
+
+		/** Hide one egress port's line(s) and exclusive path beyond it. */
+		function collect_from_port(cardId, portName, hiddenNodes, hiddenEdges) {
+			(outgoing[cardId] || []).forEach(function(e) {
+				if (e.from_port !== portName) return;
+				hiddenEdges[e.id] = true;
+				var child = e.to;
+				if (exclusively_ingressed_by_port(child, cardId, portName)) {
+					if (!hiddenNodes[child]) {
+						hiddenNodes[child] = true;
+						collect_all_egress_from(child, hiddenNodes, hiddenEdges);
 					}
 				}
 			});
@@ -1273,11 +1334,23 @@ function render_diagram(data) {
 		function apply_path_visibility() {
 			var hiddenNodes = {};
 			var hiddenEdges = {};
+
 			free_nodes.forEach(function(n) {
-				n._has_egress = (outgoing[n.id] || []).length > 0;
-				if (n._collapsed && n._has_egress) {
-					collect_path_hide_from(n.id, hiddenNodes, hiddenEdges);
-				}
+				var egress = {};
+				(outgoing[n.id] || []).forEach(function(e) {
+					egress[e.from_port] = true;
+				});
+				n._egress_ports = egress;
+				n._collapsed_ports = n._collapsed_ports || {};
+				Object.keys(n._collapsed_ports).forEach(function(pname) {
+					if (!egress[pname]) {
+						delete n._collapsed_ports[pname];
+						return;
+					}
+					if (n._collapsed_ports[pname]) {
+						collect_from_port(n.id, pname, hiddenNodes, hiddenEdges);
+					}
+				});
 			});
 			path_hidden_edges = hiddenEdges;
 
@@ -1289,9 +1362,9 @@ function render_diagram(data) {
 					id: n.id,
 					hidden: n._path_hidden,
 					ctxRenderer: n.ctxRenderer,
-					_collapsed: !!n._collapsed,
 					_path_hidden: n._path_hidden,
-					_has_egress: n._has_egress,
+					_egress_ports: n._egress_ports,
+					_collapsed_ports: n._collapsed_ports,
 				});
 				(card_ports[n.id] || []).forEach(function(pid) {
 					node_updates.push({ id: pid, hidden: n._path_hidden });
@@ -1315,7 +1388,7 @@ function render_diagram(data) {
 			network.redraw();
 		}
 
-		// Initial eye affordances on cards that have egress
+		// Initial per-egress eye affordances
 		apply_path_visibility();
 
 		function connected_subgraph(nodeId) {
@@ -1439,9 +1512,11 @@ function render_diagram(data) {
 			if (!pt) return;
 			for (var i = 0; i < free_nodes.length; i++) {
 				var n = free_nodes[i];
-				if (eye_hit_test(n, pt)) {
+				var port = eye_hit_test(n, pt);
+				if (port) {
 					suppress_select = true;
-					n._collapsed = !n._collapsed;
+					n._collapsed_ports = n._collapsed_ports || {};
+					n._collapsed_ports[port] = !n._collapsed_ports[port];
 					apply_path_visibility();
 					network.unselectAll();
 					clear_selection_highlight();
